@@ -41,10 +41,12 @@ All routes other than health and login require `Authorization: Bearer <token>`.
 | GET, POST, PATCH | `/api/v1/brands`                            | Manage product brands                                         |
 | GET, POST, PATCH | `/api/v1/units`                             | Manage selectable product units                               |
 | GET, POST        | `/api/v1/stock-adjustments`                 | View stock movement history and create admin-only adjustments |
+| GET, POST, PATCH, DELETE | `/api/v1/coupons`                    | Manage coupons; filter by `type=all`, `sales-based`, or `non-sale-based` |
 | GET, POST, PATCH | `/api/v1/customers`                         | Manage customers                                              |
 | GET, POST, PATCH | `/api/v1/suppliers`                         | Manage suppliers                                              |
 | POST             | `/api/v1/purchases`                         | Post purchase and increase stock atomically                   |
 | POST             | `/api/v1/sales`                             | Post sale and decrease stock atomically                       |
+| PATCH            | `/api/v1/sales/:id`                         | Apply or replace coupon on an unpaid posted sale              |
 | POST             | `/api/v1/customer-payments`                 | Record a cash/UPI payment against one invoice                 |
 | POST             | `/api/v1/supplier-payments`                 | Record a supplier payment against one purchase                |
 | POST             | `/api/v1/sales/:id/cancel`                  | Admin-only cancellation and stock restoration                 |
@@ -64,6 +66,7 @@ List endpoints support `page`, `limit` (maximum 100), and `search`. Lists of pro
 ## Business-rule defaults and limits
 
 - Products reference managed Brand and Unit records. New product creation accepts `qty` for opening stock; later stock changes use stock adjustments.
+- Coupons are fixed-amount discounts. A sale can have one unique coupon code; sale-based coupon amounts reduce the invoice total. Standalone coupon records do not affect a sale.
 - Tax is omitted until tax treatment/rates are confirmed.
 - Purchase `our rate` is omitted until its meaning is defined.
 - Sale cost snapshot is nullable. No gross/net profit figures are reported until the costing method is agreed.

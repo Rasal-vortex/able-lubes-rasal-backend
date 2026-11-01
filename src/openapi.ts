@@ -108,6 +108,37 @@ export const openApiDocument = {
         },
       },
     },
+    "/coupons": {
+      get: {
+        summary: "List coupons by type",
+        description:
+          "Use type=all, type=sales-based, or type=non-sale-based. Defaults to all.",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Paginated coupons" } },
+      },
+      post: {
+        summary: "Create a standalone coupon record",
+        security: [{ bearerAuth: [] }],
+        responses: { "201": { description: "Created coupon" } },
+      },
+    },
+    "/coupons/{id}": {
+      get: {
+        summary: "Get coupon",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Coupon" } },
+      },
+      patch: {
+        summary: "Update standalone coupon",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Updated coupon" } },
+      },
+      delete: {
+        summary: "Delete standalone coupon",
+        security: [{ bearerAuth: [] }],
+        responses: { "204": { description: "Deleted coupon" } },
+      },
+    },
     "/products/{id}": {
       get: {
         summary: "Get product",
@@ -146,11 +177,21 @@ export const openApiDocument = {
     },
     "/sales": {
       post: {
-        summary: "Post sale and deduct inventory",
+        summary: "Post sale, optionally apply coupon, and deduct inventory",
         security: [{ bearerAuth: [] }],
         responses: {
           "201": { description: "Posted invoice" },
           "409": { description: "Insufficient stock or conflicting request" },
+        },
+      },
+    },
+    "/sales/{id}": {
+      patch: {
+        summary: "Add or replace coupon on an unpaid sale",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Updated sale and coupon" },
+          "409": { description: "Sale has payments or coupon code is taken" },
         },
       },
     },

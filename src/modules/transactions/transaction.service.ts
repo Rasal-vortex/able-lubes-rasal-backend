@@ -65,7 +65,8 @@ export async function createSale(input: any) {
           historicalCostSnapshot: null,
         });
       }
-      const invoiceDiscount = dec(input.discountAmount);
+      const couponPrice = dec(input.couponPrice ?? 0);
+      const invoiceDiscount = dec(input.discountAmount).add(couponPrice);
       let totals;
       try {
         totals = calculateInvoice(subtotal, lineDiscounts, invoiceDiscount);
@@ -103,9 +104,74 @@ export async function createSale(input: any) {
           status: "POSTED",
           paymentStatus: "UNPAID",
           items: { create: lines },
+          ...(input.couponCode
+            ? {
+                coupon: {
+                  create: {
+                    code: input.couponCode,
+                    price: couponPrice,
+                    isSaleBased: true,
+                  },
+                },
+              }
+            : {}),
         },
-        include: { items: true, payments: true },
+        include: { items: true, payments: true, coupon: true },
       });
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
+}
+
+export async function updateSaleCoupon(id: string, input: any) {
+  return prisma.$transaction(
+    async (tx) => {
+      const sale = await tx.sale.findUnique({
+        where: { id },
+        include: { coupon: true, payments: true },
+      });
+      if (!sale) throw new ApiError(404, "Sale not found");
+      if (sale.status !== "POSTED")
+        throw new ApiError(409, "Only posted sales can be updated");
+      if (sale.payments.length)
+        throw new ApiError(409, "A sale with payments cannot be updated");
+
+      const duplicate = await tx.coupon.findUnique({
+        where: { code: input.couponCode },
+        select: { id: true },
+      });
+      if (duplicate && duplicate.id !== sale.coupon?.id)
+        throw new ApiError(409, "Coupon code has already been recorded");
+
+      const oldCouponPrice = sale.coupon?.price ?? dec(0);
+      const newCouponPrice = dec(input.couponPrice);
+      const newDiscount = sale.discountAmount
+        .sub(oldCouponPrice)
+        .add(newCouponPrice);
+      if (newDiscount.gt(sale.subtotal))
+        throw new ApiError(400, "Coupon discount cannot exceed the remaining sale value");
+
+      const updatedSale = await tx.sale.update({
+        where: { id },
+        data: {
+          discountAmount: newDiscount,
+          totalAmount: sale.subtotal.sub(newDiscount),
+        },
+      });
+      const coupon = sale.coupon
+        ? await tx.coupon.update({
+            where: { id: sale.coupon.id },
+            data: { code: input.couponCode, price: newCouponPrice },
+          })
+        : await tx.coupon.create({
+            data: {
+              code: input.couponCode,
+              price: newCouponPrice,
+              isSaleBased: true,
+              saleId: sale.id,
+            },
+          });
+      return { ...updatedSale, coupon };
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
