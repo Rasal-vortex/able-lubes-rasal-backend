@@ -1,9 +1,10 @@
 import "dotenv/config";
 import app from "./app.js";
+import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import os from "os";
 
-const port = Number(process.env.PORT || 3000);
+let port = env.PORT;
 
 const getLocalIP = () => {
   const interfaces = os.networkInterfaces();
@@ -18,10 +19,25 @@ const getLocalIP = () => {
   return "localhost";
 };
 
-const server = app.listen(port, () => {
+const server = app.listen(port);
+
+server.on("listening", () => {
   const ip = getLocalIP();
   console.log(`  Local:   http://localhost:${port}`);
   console.log(`  Network: http://${ip}:${port}`);
+});
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    const previousPort = port;
+    port += 1;
+    console.warn(`Port ${previousPort} is already in use; trying ${port}`);
+    server.listen(port);
+    return;
+  }
+
+  console.error("Unable to start the server:", error);
+  process.exit(1);
 });
 
 async function shutdown(signal: string) {
