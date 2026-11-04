@@ -22,6 +22,8 @@ npm run dev
 
 The Prisma 7 generator writes its client into `generated/prisma`. Prisma CLI datasource configuration is in `prisma.config.ts`; runtime PostgreSQL queries use `@prisma/adapter-pg`. Do not edit generated client files or commit `.env`.
 
+On a database with existing units, run `npm run db:unit-mapping` before migrating or seeding. It writes a read-only inventory of units, products, and linked sales, purchases, and stock movements to `output/unit-mapping-report.json`. The seed stops before unit writes if normalized names collide or an existing unit name may be a canonical symbol alias; review the report and resolve the mapping first.
+
 For production, run `npm run build`, then `npm run db:deploy`, then `npm start`. Set production secrets through the deployment environment.
 
 ## Environment
@@ -39,7 +41,8 @@ All routes other than health and login require `Authorization: Bearer <token>`.
 | GET, POST        | `/api/v1/products`                          | Search/list and create products                               |
 | GET, PATCH       | `/api/v1/products/:id`                      | Read/update product details; stock is never directly writable |
 | GET, POST, PATCH | `/api/v1/brands`                            | Manage product brands                                         |
-| GET, POST, PATCH | `/api/v1/units`                             | Manage selectable product units                               |
+| GET, POST, PATCH | `/api/v1/units`                             | List and manage selectable product units; unit records cannot be deleted or disabled |
+| GET, PATCH       | `/api/v1/units/:id`                         | Read or update a unit                                         |
 | GET, POST        | `/api/v1/stock-adjustments`                 | View stock movement history and create admin-only adjustments |
 | GET, POST, PATCH, DELETE | `/api/v1/coupons`                    | Manage coupons; filter by `type=all`, `sales-based`, or `non-sale-based` |
 | GET, POST, PATCH | `/api/v1/customers`                         | Manage customers                                              |
@@ -73,7 +76,7 @@ List endpoints support `page`, `limit` (maximum 100), and `search`. Lists of pro
 - Customer/supplier advances and overpayments are rejected; payment allocation across invoices is not supported.
 - Cancellation restores stock only once by changing the posted record's state within the same transaction. A sale/purchase with linked payments cannot be cancelled through this API; payment reversal/refund handling must be defined before paid invoices can be reversed.
 - Product stock changes through opening quantity on product creation, posted purchase/sale workflows, and admin stock adjustments. All are recorded transactionally; manual adjustment history is available through `/api/v1/stock-adjustments`.
-- All inventory quantities use three decimal places. Change this after confirming packaging/unit precision.
+- Inventory quantities follow the product unit: integer-only units reject fractions; decimal units accept at most three decimal places. Values are rejected before persistence rather than rounded.
 - Reports group dates in `Asia/Kolkata`; `from` and `to` are inclusive ISO date/time instants. Supply explicit time offsets when the reporting window is local business time.
 
 These rules are documented defaults, not assumptions about tax or profit accounting. Revise the schema before the first migration if the business confirms different policies.

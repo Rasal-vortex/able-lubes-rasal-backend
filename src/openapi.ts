@@ -84,7 +84,7 @@ export const openApiDocument = {
         responses: { "200": { description: "Unit" } },
       },
       patch: {
-        summary: "Update or deactivate unit",
+        summary: "Update unit name, symbol, or decimal allowance",
         security: [{ bearerAuth: [] }],
         responses: { "200": { description: "Updated unit" } },
       },

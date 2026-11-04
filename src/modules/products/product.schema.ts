@@ -8,7 +8,19 @@ export const createProductSchema = z.object({
   unitId: z.uuid(),
   sellingPrice: money,
   mrp: money.optional().nullable(),
-  qty: z.coerce.number().finite().min(0).max(999999999).default(0),
+  qty: z
+    .union([
+      z.number().finite(),
+      z
+        .string()
+        .trim()
+        .regex(/^\d+(\.\d+)?$/),
+    ])
+    .refine(
+      (v) => Number(v) >= 0 && Number(v) <= 999999999,
+      "Quantity must be non-negative and within the supported range",
+    )
+    .default(0),
   active: z.boolean().optional(),
 });
 export const updateProductSchema = createProductSchema

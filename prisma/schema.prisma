@@ -98,13 +98,14 @@ model Brand {
 }
 
 model Unit {
-  id        String    @id @default(uuid()) @db.Uuid
-  name      String    @unique
-  symbol    String?
-  active    Boolean   @default(true)
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  products  Product[]
+  id             String    @id @default(uuid()) @db.Uuid
+  name           String    @unique
+  symbol         String?   @db.VarChar(5)
+  active         Boolean   @default(true)
+  allowsDecimals Boolean   @default(false) @map("allows_decimals")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  products       Product[]
 
   @@map("units")
 }

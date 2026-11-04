@@ -2,6 +2,7 @@ import { Router } from "express";
 import * as c from "./catalog.controller.js";
 import {
   unitSchema,
+  unitUpdateSchema,
   catalogIdSchema,
   catalogListSchema,
 } from "./catalog.schema.js";
@@ -21,7 +22,7 @@ router.patch(
   "/:id",
   authorize("ADMIN", "STAFF"),
   validate("params", catalogIdSchema),
-  validate("body", unitSchema.partial()),
+  validate("body", unitUpdateSchema),
   c.update("unit"),
 );
 export default router;

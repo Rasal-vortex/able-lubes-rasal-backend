@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { calculateInvoice, calculateLine } from "../../shared/money.js";
+import { validateQuantity } from "../../shared/quantity.js";
 
 const dec = (n: number | string) => new Prisma.Decimal(n);
 function aggregateItems(
@@ -29,6 +30,7 @@ export async function createSale(input: any) {
       const grouped = aggregateItems(input.items);
       const products = await tx.product.findMany({
         where: { id: { in: [...grouped.keys()] }, active: true },
+        include: { unit: true },
       });
       if (products.length !== grouped.size)
         throw new ApiError(400, "One or more products are missing or inactive");
@@ -46,6 +48,7 @@ export async function createSale(input: any) {
       let lineDiscounts = dec(0);
       for (const [productId, rows] of grouped) {
         const product = productById.get(productId)!;
+        for (const row of rows) validateQuantity(row.quantity, product.unit);
         const quantity = totalQuantity(rows);
         const discount = totalDiscount(rows);
         let calculated;
@@ -116,7 +119,11 @@ export async function createSale(input: any) {
               }
             : {}),
         },
-        include: { items: true, payments: true, coupon: true },
+        include: {
+          items: { include: { product: { include: { unit: true } } } },
+          payments: true,
+          coupon: true,
+        },
       });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -149,7 +156,10 @@ export async function updateSaleCoupon(id: string, input: any) {
         .sub(oldCouponPrice)
         .add(newCouponPrice);
       if (newDiscount.gt(sale.subtotal))
-        throw new ApiError(400, "Coupon discount cannot exceed the remaining sale value");
+        throw new ApiError(
+          400,
+          "Coupon discount cannot exceed the remaining sale value",
+        );
 
       const updatedSale = await tx.sale.update({
         where: { id },
@@ -181,10 +191,10 @@ export async function createPurchase(input: any) {
   return prisma.$transaction(
     async (tx) => {
       const grouped = aggregateItems(input.items);
-      console.log(grouped);
 
       const products = await tx.product.findMany({
         where: { id: { in: [...grouped.keys()] }, active: true },
+        include: { unit: true },
       });
       if (products.length !== grouped.size)
         throw new ApiError(400, "One or more products are missing or inactive");
@@ -195,10 +205,13 @@ export async function createPurchase(input: any) {
         }))
       )
         throw new ApiError(400, "Supplier is missing or inactive");
+      const productById = new Map(products.map((p) => [p.id, p]));
       const lines: any[] = [];
       let subtotal = dec(0);
       for (const [productId, rows] of grouped) {
         const rate = dec(rows[0].supplierRate!);
+        const product = productById.get(productId)!;
+        for (const row of rows) validateQuantity(row.quantity, product.unit);
         if (rows.some((r) => !dec(r.supplierRate!).eq(rate)))
           throw new ApiError(
             400,
@@ -240,7 +253,10 @@ export async function createPurchase(input: any) {
           status: "POSTED",
           items: { create: lines },
         },
-        include: { items: true, payments: true },
+        include: {
+          items: { include: { product: { include: { unit: true } } } },
+          payments: true,
+        },
       });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -252,7 +268,10 @@ export async function cancelSale(id: string) {
     async (tx) => {
       const sale = await tx.sale.findUnique({
         where: { id },
-        include: { items: true, payments: true },
+        include: {
+          items: { include: { product: { include: { unit: true } } } },
+          payments: true,
+        },
       });
       if (!sale) throw new ApiError(404, "Sale not found");
       if (sale.status === "CANCELLED") return sale;
@@ -280,7 +299,10 @@ export async function cancelPurchase(id: string) {
     async (tx) => {
       const purchase = await tx.purchase.findUnique({
         where: { id },
-        include: { items: true, payments: true },
+        include: {
+          items: { include: { product: { include: { unit: true } } } },
+          payments: true,
+        },
       });
       if (!purchase) throw new ApiError(404, "Purchase not found");
       if (purchase.status === "CANCELLED") return purchase;

@@ -1,0 +1,189 @@
+{
+  "mode": "READ_ONLY",
+  "mapping": [
+    {
+      "oldUnit": {
+        "id": "6fff3f5f-b244-b2ce-6396-57919e0957b4",
+        "name": "3",
+        "symbol": null,
+        "active": true
+      },
+      "proposedCanonicalUnit": null,
+      "possibleSymbolAliasMatches": [],
+      "mappingStatus": "KEEP_EXISTING_REVIEW_IF_RENAMING",
+      "products": []
+    },
+    {
+      "oldUnit": {
+        "id": "dd2ec46b-ac1f-4137-a896-4218d2e1e550",
+        "name": "dfsd",
+        "symbol": "L",
+        "active": true
+      },
+      "proposedCanonicalUnit": null,
+      "possibleSymbolAliasMatches": [],
+      "mappingStatus": "KEEP_EXISTING_REVIEW_IF_RENAMING",
+      "products": [
+        {
+          "id": "1b8ff95c-2bd6-46b1-a1f8-874b485e93a4",
+          "name": "Bike Oil",
+          "historicalSales": 4,
+          "historicalPurchases": 2,
+          "stockMovements": 3
+        },
+        {
+          "id": "fe010ccc-8a45-428f-b107-7f86ebbcb20f",
+          "name": "Engine Oil",
+          "historicalSales": 1,
+          "historicalPurchases": 1,
+          "stockMovements": 1
+        },
+        {
+          "id": "31697797-cf02-447e-aea4-066b12f237cb",
+          "name": "Engine Oil",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 1
+        },
+        {
+          "id": "fc30a777-47ce-411d-9a14-b5f86ea503c8",
+          "name": "oil1",
+          "historicalSales": 1,
+          "historicalPurchases": 0,
+          "stockMovements": 1
+        },
+        {
+          "id": "17a5e582-da69-499c-b0f6-5efe51eca0ad",
+          "name": "OIL2",
+          "historicalSales": 0,
+          "historicalPurchases": 1,
+          "stockMovements": 0
+        },
+        {
+          "id": "8506b4b0-1d8a-48e7-870b-9075e4569ba0",
+          "name": "Test Product",
+          "historicalSales": 2,
+          "historicalPurchases": 0,
+          "stockMovements": 1
+        }
+      ]
+    },
+    {
+      "oldUnit": {
+        "id": "6d1f38d4-8e21-4a3f-a6ee-7c8496e8eef6",
+        "name": "Dummy Engine Oil 5W-30",
+        "symbol": null,
+        "active": true
+      },
+      "proposedCanonicalUnit": null,
+      "possibleSymbolAliasMatches": [],
+      "mappingStatus": "KEEP_EXISTING_REVIEW_IF_RENAMING",
+      "products": [
+        {
+          "id": "8c2fa2ff-87ef-4d3d-8a78-872a1f9ff6b7",
+          "name": "def",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 1
+        }
+      ]
+    },
+    {
+      "oldUnit": {
+        "id": "609545a1-12ef-d6fc-bb3b-03d715c8f4ad",
+        "name": "L",
+        "symbol": null,
+        "active": true
+      },
+      "proposedCanonicalUnit": null,
+      "possibleSymbolAliasMatches": [
+        "Litre"
+      ],
+      "mappingStatus": "POSSIBLE_SYMBOL_ALIAS_REQUIRES_REVIEW",
+      "products": [
+        {
+          "id": "f8da6bb1-feef-46a0-a422-57194ac325ce",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 0
+        },
+        {
+          "id": "ef42939a-eac0-4d01-8239-496c01c2c7bb",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 0
+        },
+        {
+          "id": "265c61bb-924e-4607-913f-343751488395",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 0
+        },
+        {
+          "id": "93c97bf8-6c08-4681-bd57-b256ce92523b",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 0
+        },
+        {
+          "id": "a5a4cd2b-a132-4a44-bccf-7e2bd3a90c6a",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 2,
+          "historicalPurchases": 2,
+          "stockMovements": 0
+        },
+        {
+          "id": "a690d9de-bc46-45a7-9eda-670d2e262bdc",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 0
+        },
+        {
+          "id": "a8ff960c-98f7-4236-8aa4-2db956d01b28",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 0
+        },
+        {
+          "id": "c268a788-e8f5-4fe5-87f3-19fe5b35897a",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 0,
+          "stockMovements": 0
+        },
+        {
+          "id": "d3842c83-b85e-46bc-a1ba-b6c5c7170943",
+          "name": "Dummy Engine Oil 5W-30",
+          "historicalSales": 1,
+          "historicalPurchases": 3,
+          "stockMovements": 0
+        },
+        {
+          "id": "8ca67a24-8a8b-4d9f-bd1d-16dc64263545",
+          "name": "Sample Engine Oil 5W-30",
+          "historicalSales": 0,
+          "historicalPurchases": 1,
+          "stockMovements": 0
+        }
+      ]
+    },
+    {
+      "oldUnit": {
+        "id": "5c532582-a175-4676-9f18-7623743d026f",
+        "name": "qwer",
+        "symbol": "ddd",
+        "active": true
+      },
+      "proposedCanonicalUnit": null,
+      "possibleSymbolAliasMatches": [],
+      "mappingStatus": "KEEP_EXISTING_REVIEW_IF_RENAMING",
+      "products": []
+    }
+  ]
+}
