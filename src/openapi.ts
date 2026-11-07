@@ -13,6 +13,18 @@ export const openApiDocument = {
     },
   },
   paths: {
+    "/dashboard/summary": {
+      get: {
+        summary: "CRM Overview dashboard summary",
+        security: [{ bearerAuth: [] }],
+        parameters: [{
+          name: "month", in: "query", required: false,
+          schema: { type: "string", pattern: "^\\d{4}-(0[1-9]|1[0-2])$", example: "2026-11" },
+          description: "Month to return daily paid and credit sales for, in YYYY-MM format",
+        }],
+        responses: { "200": { description: "Today totals, outstanding balances, monthly count, chart data and latest sales" } },
+      },
+    },
     "/auth/login": {
       post: {
         summary: "Sign in",
@@ -240,6 +252,26 @@ export const openApiDocument = {
         summary: "Record expense",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Created expense" } },
+      },
+    },
+    "/export/database": {
+      get: {
+        summary: "Get an admin-only database export download link",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Download URL and export filename" },
+          "403": { description: "Admin role required" },
+        },
+      },
+    },
+    "/export/database/download": {
+      get: {
+        summary: "Download the Excel database export (admin only)",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Excel workbook download" },
+          "403": { description: "Admin role required" },
+        },
       },
     },
     "/reports/sales": {

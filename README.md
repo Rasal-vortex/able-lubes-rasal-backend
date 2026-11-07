@@ -37,6 +37,7 @@ All routes other than health and login require `Authorization: Bearer <token>`.
 | Method           | Endpoint                                    | Purpose                                                       |
 | ---------------- | ------------------------------------------- | ------------------------------------------------------------- |
 | POST             | `/api/v1/auth/login`                        | Get a JWT                                                     |
+| GET              | `/api/v1/dashboard/summary?month=YYYY-MM`   | CRM Overview totals, balances, daily paid/credit sales, and latest invoices |
 | POST             | `/api/v1/auth/users`                        | Admin-only staff/admin account creation                       |
 | GET, POST        | `/api/v1/products`                          | Search/list and create products                               |
 | GET, PATCH       | `/api/v1/products/:id`                      | Read/update product details; stock is never directly writable |

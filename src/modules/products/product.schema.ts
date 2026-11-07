@@ -2,12 +2,13 @@ import { z } from "zod";
 import { paginationSchema } from "../../shared/pagination.js";
 const money = z.coerce.number().finite().min(0).max(9999999999.99);
 export const productIdSchema = z.object({ id: z.uuid() });
-export const createProductSchema = z.object({
+const productFields = z.object({
   name: z.string().trim().min(1).max(160),
   brandId: z.uuid(),
   unitId: z.uuid(),
+  purchaseRate: money,
   sellingPrice: money,
-  mrp: money.optional().nullable(),
+  mrp: money,
   qty: z
     .union([
       z.number().finite(),
@@ -23,9 +24,23 @@ export const createProductSchema = z.object({
     .default(0),
   active: z.boolean().optional(),
 });
-export const updateProductSchema = createProductSchema
+export const createProductSchema = productFields.refine(
+  (product) => product.mrp > product.sellingPrice,
+  {
+    message: "MRP must be greater than selling price",
+    path: ["mrp"],
+  },
+);
+export const updateProductSchema = productFields
   .omit({ qty: true })
-  .partial();
+  .partial()
+  .refine(
+    (product) =>
+      product.mrp === undefined ||
+      product.sellingPrice === undefined ||
+      product.mrp > product.sellingPrice,
+    { message: "MRP must be greater than selling price", path: ["mrp"] },
+  );
 export const productListSchema = paginationSchema.extend({
   active: z
     .enum(["true", "false"])

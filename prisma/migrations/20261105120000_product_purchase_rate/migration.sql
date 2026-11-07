@@ -1,0 +1,2 @@
+ALTER TABLE "products"
+ADD COLUMN "purchase_rate" DECIMAL(12,2) NOT NULL DEFAULT 0;

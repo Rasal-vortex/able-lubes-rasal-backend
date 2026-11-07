@@ -238,7 +238,10 @@ export async function createPurchase(input: any) {
         const quantity = totalQuantity(rows);
         await tx.product.update({
           where: { id: productId },
-          data: { currentStock: { increment: quantity } },
+          data: {
+            currentStock: { increment: quantity },
+            purchaseRate: dec(rows[0].supplierRate!),
+          },
         });
       }
       return tx.purchase.create({

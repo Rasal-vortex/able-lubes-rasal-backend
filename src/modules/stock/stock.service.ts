@@ -83,6 +83,9 @@ export async function listMovements(q: any) {
       unitAllowsDecimals: m.product.unit.allowsDecimals,
       product: {
         ...m.product,
+        purchaseRate: m.product.purchaseRate.toString(),
+        sellingPrice: m.product.sellingPrice.toString(),
+        mrp: m.product.mrp?.toString() ?? null,
         currentStock: m.product.currentStock.toString(),
         unit: m.product.unit.symbol || m.product.unit.name,
       },
