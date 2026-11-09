@@ -2,7 +2,7 @@ ALTER TYPE "PaymentMethod" ADD VALUE IF NOT EXISTS 'COUPON';
 
 ALTER TABLE "sale_items"
   ADD COLUMN "unit_name_snapshot" TEXT,
-  ADD COLUMN "unit_symbol_snapshot" VARCHAR(5),
+  ADD COLUMN "unit_symbol_snapshot" TEXT,
   ADD COLUMN "unit_allows_decimals_snapshot" BOOLEAN;
 
 UPDATE "sale_items" AS item
@@ -19,7 +19,7 @@ ALTER TABLE "sale_items"
 
 ALTER TABLE "purchase_items"
   ADD COLUMN "unit_name_snapshot" TEXT,
-  ADD COLUMN "unit_symbol_snapshot" VARCHAR(5),
+  ADD COLUMN "unit_symbol_snapshot" TEXT,
   ADD COLUMN "unit_allows_decimals_snapshot" BOOLEAN;
 
 UPDATE "purchase_items" AS item
