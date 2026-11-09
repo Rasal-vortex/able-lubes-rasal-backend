@@ -101,6 +101,18 @@
       "key": "healthUrl",
       "value": "http://localhost:3000/health",
       "type": "string"
+    },
+    {
+      "key": "businessDate",
+      "value": "2026-11-07",
+      "type": "string",
+      "description": "YYYY-MM-DD in Asia/Kolkata; update to the business date being reported"
+    },
+    {
+      "key": "dashboardMonth",
+      "value": "2026-11",
+      "type": "string",
+      "description": "YYYY-MM chart month"
     }
   ],
   "item": [
@@ -771,7 +783,7 @@
     },
     {
       "name": "7. Payments",
-      "description": "POST customer/supplier payments against one invoice. No payment read, update, or delete route exists.",
+      "description": "POST one customer-payment request per payment mode on the same saleId to support split Cash, UPI, and Coupon tender. Supplier payment remains Cash/UPI.",
       "item": [
         {
           "name": "Record supplier payment",
@@ -830,6 +842,28 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"saleId\": \"{{saleId}}\",\n  \"amount\": 500,\n  \"method\": \"CASH\",\n  \"notes\": \"Dummy partial payment\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/customer-payments"
+          }
+        },
+        {
+          "name": "Record coupon payment against same invoice",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"saleId\": \"{{saleId}}\",\n  \"amount\": 100,\n  \"method\": \"COUPON\",\n  \"notes\": \"Coupon tender example; same invoice as previous payment\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -958,7 +992,7 @@
     },
     {
       "name": "10. Reports",
-      "description": "Read-only GET endpoints for sales, purchases, expenses, customer/supplier outstanding, and monthly summary.",
+      "description": "Authenticated GET endpoints for sales, payment-based daily sales, profit, expenses, supplier outstanding/ledger, monthly summary, and CRM dashboard.",
       "item": [
         {
           "name": "Purchase report",
@@ -968,7 +1002,7 @@
           }
         },
         {
-          "name": "Daily sales report",
+          "name": "Sales report by invoice and product lines",
           "event": [
             {
               "listen": "test",
@@ -993,13 +1027,6 @@
           }
         },
         {
-          "name": "Customer outstanding balances",
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/reports/customers/outstanding"
-          }
-        },
-        {
           "name": "Supplier outstanding balances",
           "request": {
             "method": "GET",
@@ -1011,6 +1038,34 @@
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/reports/monthly?from={{reportFrom}}&to={{reportTo}}"
+          }
+        },
+        {
+          "name": "Payments received for a business date (Daily Sales)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reports/daily-sales?date={{businessDate}}"
+          }
+        },
+        {
+          "name": "Profit less expenses",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reports/profit?from={{reportFrom}}&to={{reportTo}}"
+          }
+        },
+        {
+          "name": "Individual supplier ledger with total outstanding",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/reports/suppliers/{{supplierId}}/ledger"
+          }
+        },
+        {
+          "name": "CRM Overview dashboard summary",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/dashboard/summary?month={{dashboardMonth}}"
           }
         }
       ]

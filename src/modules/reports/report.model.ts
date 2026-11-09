@@ -4,11 +4,22 @@ export const reportModel = {
     prisma.sale.findMany({
       where: { status: "POSTED", billDate: { gte: from, lte: to } },
       select: {
+        id: true,
+        invoiceNumber: true,
         billDate: true,
         subtotal: true,
         discountAmount: true,
         totalAmount: true,
-        items: { select: { lineTotal: true, historicalCostSnapshot: true } },
+        customer: { select: { id: true, name: true } },
+        items: {
+          select: {
+            id: true, quantity: true, unitSellingPrice: true, discountAmount: true,
+            lineTotal: true, historicalCostSnapshot: true,
+            unitNameSnapshot: true, unitSymbolSnapshot: true,
+            product: { select: { id: true, name: true, purchaseRate: true } },
+          },
+        },
+        payments: { select: { id: true, amount: true, method: true, paymentDate: true } },
       },
       orderBy: { billDate: "asc" },
     }),
@@ -28,6 +39,38 @@ export const reportModel = {
       where: { expenseDate: { gte: from, lte: to } },
       select: { expenseDate: true, amount: true },
     }),
+  dailyPayments: (from: Date, to: Date) => prisma.customerPayment.findMany({
+    where: { paymentDate: { gte: from, lt: to }, sale: { status: "POSTED" } },
+    select: {
+      id: true, amount: true, method: true, paymentDate: true,
+      sale: {
+        select: {
+          id: true, invoiceNumber: true, billDate: true, totalAmount: true,
+          customer: { select: { id: true, name: true } },
+          items: { select: {
+            id: true, quantity: true, unitSellingPrice: true, discountAmount: true,
+            lineTotal: true, unitNameSnapshot: true, unitSymbolSnapshot: true,
+            product: { select: { id: true, name: true } },
+          } },
+        },
+      },
+    },
+    orderBy: { paymentDate: "asc" },
+  }),
+  supplier: (id: string) => prisma.supplier.findUnique({
+    where: { id },
+    select: {
+      id: true, name: true, phone: true,
+      purchases: {
+        where: { status: "POSTED" },
+        select: {
+          id: true, purchaseNumber: true, purchaseDate: true, totalAmount: true,
+          payments: { select: { id: true, amount: true, method: true, paymentDate: true } },
+        },
+        orderBy: { purchaseDate: "desc" },
+      },
+    },
+  }),
   customerSales: () =>
     prisma.sale.findMany({
       where: { status: "POSTED", customerId: { not: null } },

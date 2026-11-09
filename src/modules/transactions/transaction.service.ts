@@ -65,7 +65,10 @@ export async function createSale(input: any) {
           unitSellingPrice: product.sellingPrice,
           discountAmount: calculated.discountAmount,
           lineTotal: calculated.total,
-          historicalCostSnapshot: null,
+          historicalCostSnapshot: product.purchaseRate,
+          unitNameSnapshot: product.unit.name,
+          unitSymbolSnapshot: product.unit.symbol,
+          unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
         });
       }
       const couponPrice = dec(input.couponPrice ?? 0);
@@ -225,6 +228,9 @@ export async function createPurchase(input: any) {
           quantity,
           supplierRate: rate,
           lineTotal: calculated.total,
+          unitNameSnapshot: product.unit.name,
+          unitSymbolSnapshot: product.unit.symbol,
+          unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
         });
       }
       const invoiceDiscount = dec(input.discountAmount);

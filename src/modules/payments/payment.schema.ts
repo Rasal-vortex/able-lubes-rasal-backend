@@ -4,7 +4,7 @@ export const customerPaymentSchema = z.object({
   saleId: z.uuid(),
   amount: z.coerce.number().finite().positive().max(9999999999.99),
   paymentDate: z.coerce.date().optional(),
-  method: z.enum(["CASH", "UPI"]),
+  method: z.enum(["CASH", "UPI", "COUPON"]),
   notes: z.string().trim().max(1000).optional(),
 });
 export const supplierPaymentSchema = z.object({

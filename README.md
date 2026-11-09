@@ -40,7 +40,7 @@ All routes other than health and login require `Authorization: Bearer <token>`.
 | GET              | `/api/v1/dashboard/summary?month=YYYY-MM`   | CRM Overview totals, balances, daily paid/credit sales, and latest invoices |
 | POST             | `/api/v1/auth/users`                        | Admin-only staff/admin account creation                       |
 | GET, POST        | `/api/v1/products`                          | Search/list and create products                               |
-| GET, PATCH       | `/api/v1/products/:id`                      | Read/update product details; stock is never directly writable |
+| GET, PATCH       | `/api/v1/products/:id`                      | Read/update product details including compatible unit changes; stock is never directly writable |
 | GET, POST, PATCH | `/api/v1/brands`                            | Manage product brands                                         |
 | GET, POST, PATCH | `/api/v1/units`                             | List and manage selectable product units; unit records cannot be deleted or disabled |
 | GET, PATCH       | `/api/v1/units/:id`                         | Read or update a unit                                         |
@@ -51,16 +51,18 @@ All routes other than health and login require `Authorization: Bearer <token>`.
 | POST             | `/api/v1/purchases`                         | Post purchase and increase stock atomically                   |
 | POST             | `/api/v1/sales`                             | Post sale and decrease stock atomically                       |
 | PATCH            | `/api/v1/sales/:id`                         | Apply or replace coupon on an unpaid posted sale              |
-| POST             | `/api/v1/customer-payments`                 | Record a cash/UPI payment against one invoice                 |
+| POST             | `/api/v1/customer-payments`                 | Record a Cash/UPI/Coupon payment; call once per tender mode for split payments |
 | POST             | `/api/v1/supplier-payments`                 | Record a supplier payment against one purchase                |
 | POST             | `/api/v1/sales/:id/cancel`                  | Admin-only cancellation and stock restoration                 |
 | POST             | `/api/v1/purchases/:id/cancel`              | Admin-only cancellation and stock reversal                    |
 | GET, POST, PATCH | `/api/v1/expenses`                          | List, create and update expenses                              |
-| GET              | `/api/v1/reports/sales?from=...&to=...`     | Daily sales totals and date-range totals                      |
+| GET              | `/api/v1/reports/sales?from=...&to=...`     | Sales totals plus invoice product lines and recorded payments |
+| GET              | `/api/v1/reports/daily-sales?date=YYYY-MM-DD` | Payments actually received on a business date, grouped by invoice with product lines and payment methods |
+| GET              | `/api/v1/reports/profit?from=...&to=...`    | Item profit, total expenses, and final profit                  |
 | GET              | `/api/v1/reports/purchases?from=...&to=...` | Purchase report                                               |
 | GET              | `/api/v1/reports/expenses?from=...&to=...`  | Expense report                                                |
-| GET              | `/api/v1/reports/customers/outstanding`     | Customer invoice balances                                     |
 | GET              | `/api/v1/reports/suppliers/outstanding`     | Supplier purchase balances                                    |
+| GET              | `/api/v1/reports/suppliers/:id/ledger`      | Supplier purchase/payment history and aggregate outstanding balance |
 | GET              | `/api/v1/reports/monthly?from=...&to=...`   | Monthly sales, purchases and expenses                         |
 
 Sales and purchase requests do not use an idempotency key. A retried request can create a second invoice and change stock again, so check the transaction result before resending after a timeout. Sale products, prices and totals are calculated by the server. Customer/supplier payments must be linked to one invoice and may not exceed its remaining amount. Cash and UPI are recorded as actual payments; an unpaid invoice is credit. A sale without a customer can still receive a payment linked to its invoice.
@@ -70,11 +72,11 @@ List endpoints support `page`, `limit` (maximum 100), and `search`. Lists of pro
 ## Business-rule defaults and limits
 
 - Products reference managed Brand and Unit records. New product creation accepts `qty` for opening stock; later stock changes use stock adjustments.
-- Coupons are fixed-amount discounts. A sale can have one unique coupon code; sale-based coupon amounts reduce the invoice total. Standalone coupon records do not affect a sale.
+- Existing sale-based coupons remain fixed-amount discounts. Customer payments also accept `method: "COUPON"` as a tender mode; submit one customer-payment request per payment mode against the same sale. Coupon validation/redemption rules remain pending client feedback.
 - Tax is omitted until tax treatment/rates are confirmed.
 - Purchase `our rate` is omitted until its meaning is defined.
-- Sale cost snapshot is nullable. No gross/net profit figures are reported until the costing method is agreed.
-- Customer/supplier advances and overpayments are rejected; payment allocation across invoices is not supported.
+- Sale lines snapshot purchase cost and product unit when posted. Profit reports use sale-time purchase cost (legacy rows with no cost snapshot fall back to the current product purchase rate).
+- Customer/supplier advances and overpayments are rejected; payment allocation across invoices is not supported. Customer payments also record credit settlements, so Daily Sales reports payments only on their actual received date.
 - Cancellation restores stock only once by changing the posted record's state within the same transaction. A sale/purchase with linked payments cannot be cancelled through this API; payment reversal/refund handling must be defined before paid invoices can be reversed.
 - Product stock changes through opening quantity on product creation, posted purchase/sale workflows, and admin stock adjustments. All are recorded transactionally; manual adjustment history is available through `/api/v1/stock-adjustments`.
 - Inventory quantities follow the product unit: integer-only units reject fractions; decimal units accept at most three decimal places. Values are rejected before persistence rather than rounded.

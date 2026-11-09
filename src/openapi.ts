@@ -230,7 +230,7 @@ export const openApiDocument = {
     },
     "/customer-payments": {
       post: {
-        summary: "Record payment against one customer invoice",
+        summary: "Record a Cash, UPI, or Coupon payment against one invoice; call once per payment mode",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
       },
@@ -278,7 +278,7 @@ export const openApiDocument = {
       get: {
         summary: "Sales report by date range",
         security: [{ bearerAuth: [] }],
-        responses: { "200": { description: "Daily sales totals" } },
+        responses: { "200": { description: "Date-range sales totals and invoices with item lines, historical units, and payment rows" } },
       },
     },
     "/reports/purchases": {
@@ -295,17 +295,6 @@ export const openApiDocument = {
         responses: { "200": { description: "Expenses" } },
       },
     },
-    "/reports/customers/outstanding": {
-      get: {
-        summary: "Customer outstanding balances",
-        security: [{ bearerAuth: [] }],
-        responses: {
-          "200": {
-            description: "Outstanding balances from invoices and payments",
-          },
-        },
-      },
-    },
     "/reports/suppliers/outstanding": {
       get: {
         summary: "Supplier outstanding balances",
@@ -315,6 +304,33 @@ export const openApiDocument = {
             description: "Outstanding balances from purchases and payments",
           },
         },
+      },
+    },
+    "/reports/suppliers/{id}/ledger": {
+      get: {
+        summary: "Get an individual supplier ledger with aggregate outstanding balance",
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Supplier, total billed, total paid, total outstanding, and purchase/payment history" } },
+      },
+    },
+    "/reports/daily-sales": {
+      get: {
+        summary: "Received customer payments for a business date, with invoice product lines",
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: "date", in: "query", required: true, schema: { type: "string", format: "date" } }],
+        responses: { "200": { description: "Only payments received on the requested date, grouped by invoice and payment method" } },
+      },
+    },
+    "/reports/profit": {
+      get: {
+        summary: "Profit less expenses for a date range",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: "from", in: "query", required: true, schema: { type: "string", format: "date-time" } },
+          { name: "to", in: "query", required: true, schema: { type: "string", format: "date-time" } },
+        ],
+        responses: { "200": { description: "Item profit using sale-time purchase costs, total expenses, and final profit" } },
       },
     },
     "/reports/monthly": {

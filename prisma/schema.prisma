@@ -30,6 +30,7 @@ enum PaymentStatus {
 enum PaymentMethod {
   CASH
   UPI
+  COUPON
 }
 
 enum PurchaseStatus {
@@ -212,6 +213,9 @@ model SaleItem {
   discountAmount         Decimal  @default(0) @map("discount_amount") @db.Decimal(12, 2)
   lineTotal              Decimal  @map("line_total") @db.Decimal(12, 2)
   historicalCostSnapshot Decimal? @map("historical_cost_snapshot") @db.Decimal(12, 2)
+  unitNameSnapshot      String   @map("unit_name_snapshot")
+  unitSymbolSnapshot    String?  @map("unit_symbol_snapshot")
+  unitAllowsDecimalsSnapshot Boolean @map("unit_allows_decimals_snapshot")
 
   @@index([saleId])
   @@index([productId])
@@ -266,6 +270,9 @@ model PurchaseItem {
   quantity     Decimal  @db.Decimal(12, 3)
   supplierRate Decimal  @map("supplier_rate") @db.Decimal(12, 2)
   lineTotal    Decimal  @map("line_total") @db.Decimal(12, 2)
+  unitNameSnapshot String @map("unit_name_snapshot")
+  unitSymbolSnapshot String? @map("unit_symbol_snapshot")
+  unitAllowsDecimalsSnapshot Boolean @map("unit_allows_decimals_snapshot")
 
   @@index([purchaseId])
   @@index([productId])

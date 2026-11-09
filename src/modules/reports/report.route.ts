@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as c from "./report.controller.js";
-import { dateRangeSchema } from "./report.schema.js";
+import { dateRangeSchema, dailySalesQuerySchema, supplierLedgerParamsSchema } from "./report.schema.js";
 import { validate } from "../../shared/validate.js";
 import { authenticate } from "../../middlewares/auth.js";
 const router = Router();
@@ -8,7 +8,9 @@ router.use(authenticate);
 router.get("/sales", validate("query", dateRangeSchema), c.sales);
 router.get("/purchases", validate("query", dateRangeSchema), c.purchases);
 router.get("/expenses", validate("query", dateRangeSchema), c.expenses);
-router.get("/customers/outstanding", c.customers);
 router.get("/suppliers/outstanding", c.suppliers);
+router.get("/suppliers/:id/ledger", validate("params", supplierLedgerParamsSchema), c.supplierLedger);
+router.get("/daily-sales", validate("query", dailySalesQuerySchema), c.dailySales);
+router.get("/profit", validate("query", dateRangeSchema), c.profit);
 router.get("/monthly", validate("query", dateRangeSchema), c.monthly);
 export default router;

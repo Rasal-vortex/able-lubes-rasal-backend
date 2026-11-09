@@ -4,9 +4,9 @@ export const purchaseSerializer = (purchase: any) => ({
     ...item,
     quantity: item.quantity.toString(),
     unitId: item.product?.unit?.id,
-    unitName: item.product?.unit?.name,
-    unitSymbol: item.product?.unit?.symbol ?? null,
-    unitAllowsDecimals: item.product?.unit?.allowsDecimals,
+    unitName: item.unitNameSnapshot ?? item.product?.unit?.name,
+    unitSymbol: item.unitSymbolSnapshot ?? item.product?.unit?.symbol ?? null,
+    unitAllowsDecimals: item.unitAllowsDecimalsSnapshot ?? item.product?.unit?.allowsDecimals,
     product: item.product && {
       ...item.product,
       purchaseRate: item.product.purchaseRate.toString(),

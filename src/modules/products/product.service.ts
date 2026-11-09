@@ -105,16 +105,6 @@ export async function updateProduct(id: string, data: any) {
         });
         if (!unit) throw new ApiError(400, "Unit is missing or inactive");
         if (data.unitId !== product.unitId) {
-          const [sales, purchases, movements] = await Promise.all([
-            tx.saleItem.count({ where: { productId: id } }),
-            tx.purchaseItem.count({ where: { productId: id } }),
-            tx.stockMovement.count({ where: { productId: id } }),
-          ]);
-          if (sales || purchases || movements)
-            throw new ApiError(
-              409,
-              "Product unit cannot be changed after transaction or stock history exists",
-            );
           if (product.currentStock.gt(0))
             validateQuantity(product.currentStock.toString(), unit);
         }
