@@ -42,7 +42,7 @@ export const reportModel = {
   dailyPayments: (from: Date, to: Date) => prisma.customerPayment.findMany({
     where: { paymentDate: { gte: from, lt: to }, sale: { status: "POSTED" } },
     select: {
-      id: true, amount: true, method: true, paymentDate: true,
+      id: true, amount: true, method: true, paymentDate: true, notes: true,
       sale: {
         select: {
           id: true, invoiceNumber: true, billDate: true, totalAmount: true,

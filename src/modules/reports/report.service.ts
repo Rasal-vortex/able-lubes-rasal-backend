@@ -116,7 +116,7 @@ export async function dailySales(date: string) {
       })),
       payments: [],
     };
-    bill.payments.push({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate });
+    bill.payments.push({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes });
     bySale.set(sale.id, bill);
     collected = collected.add(payment.amount);
     byMethod.set(payment.method, (byMethod.get(payment.method) ?? decimal(0)).add(payment.amount));

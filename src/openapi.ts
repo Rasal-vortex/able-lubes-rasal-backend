@@ -134,6 +134,13 @@ export const openApiDocument = {
         responses: { "201": { description: "Created coupon" } },
       },
     },
+    "/coupons/redemptions": {
+      get: {
+        summary: "List recorded coupon payments with their bills and customers",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Coupon redemption history" } },
+      },
+    },
     "/coupons/{id}": {
       get: {
         summary: "Get coupon",
@@ -230,7 +237,7 @@ export const openApiDocument = {
     },
     "/customer-payments": {
       post: {
-        summary: "Record a Cash, UPI, or Coupon payment against one invoice; call once per payment mode",
+        summary: "Record a Cash, UPI, or Coupon payment against one invoice; coupon payments require a valid regular coupon code and consume its remaining value",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
       },

@@ -3,6 +3,8 @@ import * as service from "./coupon.service.js";
 
 export const list = async (req: Request, res: Response) =>
   res.json({ success: true, ...(await service.listCoupons(req.query)) });
+export const redemptions = async (_req: Request, res: Response) =>
+  res.json({ success: true, data: await service.listCouponRedemptions() });
 export const get = async (req: Request, res: Response) =>
   res.json({
     success: true,

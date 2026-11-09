@@ -26,6 +26,26 @@ export async function recordCustomerPayment(input: any) {
           400,
           "Payment exceeds the invoice outstanding amount",
         );
+      if (input.method === "COUPON") {
+        const couponCode = /^Coupon code: (.+)$/.exec(input.notes ?? "")?.[1];
+        if (!couponCode)
+          throw new ApiError(400, "A coupon code is required for coupon payments");
+        const coupon = await tx.coupon.findUnique({ where: { code: couponCode } });
+        if (!coupon || coupon.isSaleBased)
+          throw new ApiError(404, "A regular coupon with this code was not found");
+        const couponPayments = await tx.customerPayment.aggregate({
+          where: { method: "COUPON", notes: `Coupon code: ${couponCode}` },
+          _sum: { amount: true },
+        });
+        const remainingCouponValue = coupon.price.sub(
+          couponPayments._sum.amount ?? amount(0),
+        );
+        if (paymentAmount.gt(remainingCouponValue))
+          throw new ApiError(
+            400,
+            `Coupon ${couponCode} has only ${remainingCouponValue.toFixed(2)} remaining`,
+          );
+      }
       const payment = await paymentModel.createCustomerPayment(
         {
           ...input,

@@ -12,6 +12,7 @@ import { validate } from "../../shared/validate.js";
 const router = Router();
 router.use(authenticate);
 router.get("/", validate("query", couponListSchema), c.list);
+router.get("/redemptions", c.redemptions);
 router.get("/:id", validate("params", couponIdSchema), c.get);
 router.post("/", validate("body", createCouponSchema), c.create);
 router.patch(
