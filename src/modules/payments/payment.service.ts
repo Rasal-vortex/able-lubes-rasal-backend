@@ -30,21 +30,21 @@ export async function recordCustomerPayment(input: any) {
         const couponCode = /^Coupon code: (.+)$/.exec(input.notes ?? "")?.[1];
         if (!couponCode)
           throw new ApiError(400, "A coupon code is required for coupon payments");
-        const coupon = await tx.coupon.findUnique({ where: { code: couponCode } });
-        if (!coupon || coupon.isSaleBased)
-          throw new ApiError(404, "A regular coupon with this code was not found");
-        const couponPayments = await tx.customerPayment.aggregate({
-          where: { method: "COUPON", notes: `Coupon code: ${couponCode}` },
-          _sum: { amount: true },
+        const recordedCoupon = await tx.coupon.findUnique({
+          where: { code: couponCode },
+          select: { id: true },
         });
-        const remainingCouponValue = coupon.price.sub(
-          couponPayments._sum.amount ?? amount(0),
-        );
-        if (paymentAmount.gt(remainingCouponValue))
+        if (recordedCoupon)
           throw new ApiError(
-            400,
-            `Coupon ${couponCode} has only ${remainingCouponValue.toFixed(2)} remaining`,
+            409,
+            "Use an unrecorded coupon code for a split sale payment",
           );
+        const priorRedemption = await tx.customerPayment.findFirst({
+          where: { method: "COUPON", notes: `Coupon code: ${couponCode}` },
+          select: { id: true },
+        });
+        if (priorRedemption)
+          throw new ApiError(409, "This coupon code has already been used");
       }
       const payment = await paymentModel.createCustomerPayment(
         {

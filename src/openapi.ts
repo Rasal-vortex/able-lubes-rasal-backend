@@ -237,7 +237,7 @@ export const openApiDocument = {
     },
     "/customer-payments": {
       post: {
-        summary: "Record a Cash, UPI, or Coupon payment against one invoice; coupon payments require a valid regular coupon code and consume its remaining value",
+        summary: "Record a Cash, UPI, or Coupon payment against one invoice; split-sale coupon payments use an unrecorded code that cannot be reused",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
       },
@@ -256,7 +256,7 @@ export const openApiDocument = {
         responses: { "200": { description: "Paginated expenses" } },
       },
       post: {
-        summary: "Record expense",
+        summary: "Record expense (description optional)",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Created expense" } },
       },

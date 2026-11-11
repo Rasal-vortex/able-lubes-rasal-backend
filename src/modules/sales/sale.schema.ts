@@ -14,8 +14,15 @@ const saleLineSchema = z.object({
       (v) => Number(v) > 0 && Number(v) <= 999999,
       "Quantity must be positive and within the supported range",
     ),
+  displayQuantity: z.coerce.number().finite().int().positive().max(999999999).optional(),
+  displayUnitName: z.literal("Gram").optional(),
+  displayUnitSymbol: z.literal("g").optional(),
   discountAmount: z.coerce.number().finite().min(0).default(0),
-});
+}).refine((line) => {
+  const anyDisplayField = line.displayQuantity !== undefined || line.displayUnitName !== undefined || line.displayUnitSymbol !== undefined;
+  const allDisplayFields = line.displayQuantity !== undefined && line.displayUnitName !== undefined && line.displayUnitSymbol !== undefined;
+  return !anyDisplayField || allDisplayFields;
+}, { message: "Gram display quantity and unit must be provided together", path: ["displayQuantity"] });
 export const createSaleSchema = z
   .object({
     customerId: z.uuid().optional().nullable(),

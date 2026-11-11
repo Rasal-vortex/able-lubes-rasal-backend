@@ -58,9 +58,9 @@ export async function salesReport(from: Date, to: Date) {
       items: row.items.map((item) => ({
         productId: item.product.id,
         productName: item.product.name,
-        quantity: item.quantity.toString(),
-        unitName: item.unitNameSnapshot,
-        unitSymbol: item.unitSymbolSnapshot,
+        quantity: (item.displayQuantity ?? item.quantity).toString(),
+        unitName: item.displayUnitNameSnapshot ?? item.unitNameSnapshot,
+        unitSymbol: item.displayUnitSymbolSnapshot ?? item.unitSymbolSnapshot,
         unitSellingPrice: item.unitSellingPrice.toFixed(2),
         discountAmount: item.discountAmount.toFixed(2),
         lineTotal: item.lineTotal.toFixed(2),
@@ -106,11 +106,13 @@ export async function dailySales(date: string) {
     const bill = bySale.get(sale.id) ?? {
       invoiceNumber: sale.invoiceNumber,
       billDate: sale.billDate,
+      discountAmount: sale.discountAmount.toFixed(2),
+      totalAmount: sale.totalAmount.toFixed(2),
       customer: sale.customer?.name ?? "Walk-in customer",
       products: sale.items.map((item) => ({
         productId: item.product.id, productName: item.product.name,
-        quantity: item.quantity.toString(), unitName: item.unitNameSnapshot,
-        unitSymbol: item.unitSymbolSnapshot,
+        quantity: (item.displayQuantity ?? item.quantity).toString(), unitName: item.displayUnitNameSnapshot ?? item.unitNameSnapshot,
+        unitSymbol: item.displayUnitSymbolSnapshot ?? item.unitSymbolSnapshot,
         unitSellingPrice: item.unitSellingPrice.toFixed(2),
         discountAmount: item.discountAmount.toFixed(2), lineTotal: item.lineTotal.toFixed(2),
       })),
@@ -180,6 +182,7 @@ export async function supplierLedger(id: string) {
     billed = billed.add(purchase.totalAmount);
     paid = paid.add(purchasePaid);
     return {
+      id: purchase.id,
       purchaseNumber: purchase.purchaseNumber,
       date: purchase.purchaseDate,
       total: purchase.totalAmount.toFixed(2),

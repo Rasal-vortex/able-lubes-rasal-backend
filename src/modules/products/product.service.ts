@@ -83,12 +83,11 @@ export async function updateProduct(id: string, data: any) {
       });
       if (!product) throw new ApiError(404, "Product not found");
       const sellingPrice = data.sellingPrice ?? product.sellingPrice;
-      const mrp = data.mrp ?? product.mrp;
+      const mrp = data.mrp !== undefined ? data.mrp : product.mrp;
       if (
         (data.mrp !== undefined || data.sellingPrice !== undefined) &&
-        (mrp === null ||
-          mrp === undefined ||
-          Number(mrp) <= Number(sellingPrice))
+        mrp != null &&
+        Number(mrp) <= Number(sellingPrice)
       )
         throw new ApiError(400, "MRP must be greater than selling price");
       if (

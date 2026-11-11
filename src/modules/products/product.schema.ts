@@ -8,7 +8,7 @@ const productFields = z.object({
   unitId: z.uuid(),
   purchaseRate: money,
   sellingPrice: money,
-  mrp: money,
+  mrp: money.nullable().optional(),
   qty: z
     .union([
       z.number().finite(),
@@ -25,7 +25,7 @@ const productFields = z.object({
   active: z.boolean().optional(),
 });
 export const createProductSchema = productFields.refine(
-  (product) => product.mrp > product.sellingPrice,
+  (product) => product.mrp == null || product.mrp > product.sellingPrice,
   {
     message: "MRP must be greater than selling price",
     path: ["mrp"],
@@ -36,7 +36,7 @@ export const updateProductSchema = productFields
   .partial()
   .refine(
     (product) =>
-      product.mrp === undefined ||
+      product.mrp == null ||
       product.sellingPrice === undefined ||
       product.mrp > product.sellingPrice,
     { message: "MRP must be greater than selling price", path: ["mrp"] },

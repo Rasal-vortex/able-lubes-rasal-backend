@@ -3,6 +3,9 @@ export const saleSerializer = (sale: any) => ({
   items: sale.items?.map((item: any) => ({
     ...item,
     quantity: item.quantity.toString(),
+    displayQuantity: item.displayQuantity?.toString() ?? null,
+    displayUnitName: item.displayUnitNameSnapshot ?? null,
+    displayUnitSymbol: item.displayUnitSymbolSnapshot ?? null,
     unitId: item.product?.unit?.id,
     unitName: item.unitNameSnapshot ?? item.product?.unit?.name,
     unitSymbol: item.unitSymbolSnapshot ?? item.product?.unit?.symbol ?? null,

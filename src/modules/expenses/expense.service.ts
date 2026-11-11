@@ -34,6 +34,7 @@ export async function createExpense(data: any) {
   return expenseSerializer(
     await expenseModel.create({
       ...data,
+      description: typeof data.description === "string" ? data.description.trim() : "",
       expenseDate: data.expenseDate ?? new Date(),
     }),
   );

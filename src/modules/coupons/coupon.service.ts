@@ -14,6 +14,8 @@ const serializeRedemption = (payment: any) => ({
   code: payment.notes.slice(couponNotePrefix.length),
   amount: payment.amount.toString(),
   paymentDate: payment.paymentDate,
+  saleId: payment.saleId,
+  isSaleBased: Boolean(payment.saleId),
   billNumber: payment.sale?.invoiceNumber ?? "—",
   customerName: payment.customer?.name ?? payment.sale?.customer?.name ?? "Walk-in customer",
 });
@@ -45,6 +47,7 @@ async function getCouponPaymentRows() {
       amount: true,
       paymentDate: true,
       notes: true,
+      saleId: true,
       customer: { select: { name: true } },
       sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } },
     },

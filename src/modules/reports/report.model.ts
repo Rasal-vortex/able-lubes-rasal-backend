@@ -13,7 +13,7 @@ export const reportModel = {
         customer: { select: { id: true, name: true } },
         items: {
           select: {
-            id: true, quantity: true, unitSellingPrice: true, discountAmount: true,
+            id: true, quantity: true, displayQuantity: true, displayUnitNameSnapshot: true, displayUnitSymbolSnapshot: true, unitSellingPrice: true, discountAmount: true,
             lineTotal: true, historicalCostSnapshot: true,
             unitNameSnapshot: true, unitSymbolSnapshot: true,
             product: { select: { id: true, name: true, purchaseRate: true } },
@@ -45,10 +45,10 @@ export const reportModel = {
       id: true, amount: true, method: true, paymentDate: true, notes: true,
       sale: {
         select: {
-          id: true, invoiceNumber: true, billDate: true, totalAmount: true,
+          id: true, invoiceNumber: true, billDate: true, totalAmount: true, discountAmount: true,
           customer: { select: { id: true, name: true } },
           items: { select: {
-            id: true, quantity: true, unitSellingPrice: true, discountAmount: true,
+            id: true, quantity: true, displayQuantity: true, displayUnitNameSnapshot: true, displayUnitSymbolSnapshot: true, unitSellingPrice: true, discountAmount: true,
             lineTotal: true, unitNameSnapshot: true, unitSymbolSnapshot: true,
             product: { select: { id: true, name: true } },
           } },

@@ -12,6 +12,9 @@ function aggregateItems(
     quantity: number;
     discountAmount: number;
     supplierRate?: number;
+    displayQuantity?: number;
+    displayUnitName?: string;
+    displayUnitSymbol?: string;
   }>,
 ) {
   const map = new Map<string, typeof items>();
@@ -48,8 +51,21 @@ export async function createSale(input: any) {
       let lineDiscounts = dec(0);
       for (const [productId, rows] of grouped) {
         const product = productById.get(productId)!;
-        for (const row of rows) validateQuantity(row.quantity, product.unit);
+        const hasGramDisplay = rows.some((row) => row.displayQuantity !== undefined);
+        if (hasGramDisplay && rows.some((row) => row.displayQuantity === undefined))
+          throw new ApiError(400, "Use one quantity unit for each product line");
+        for (const row of rows) {
+          validateQuantity(row.quantity, product.unit);
+          if (row.displayQuantity !== undefined) {
+            const isKilogram = product.unit.name.trim().toLowerCase() === "kilogram" || product.unit.symbol?.trim().toLowerCase() === "kg";
+            if (!isKilogram || row.displayUnitName !== "Gram" || row.displayUnitSymbol !== "g" || !dec(row.displayQuantity).div(1000).eq(dec(row.quantity)))
+              throw new ApiError(400, "Gram quantity must match the product quantity in kilograms");
+          }
+        }
         const quantity = totalQuantity(rows);
+        const displayQuantity = hasGramDisplay
+          ? totalQuantity(rows.map((row) => ({ quantity: row.displayQuantity! })))
+          : undefined;
         const discount = totalDiscount(rows);
         let calculated;
         try {
@@ -69,6 +85,11 @@ export async function createSale(input: any) {
           unitNameSnapshot: product.unit.name,
           unitSymbolSnapshot: product.unit.symbol,
           unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
+          ...(displayQuantity ? {
+            displayQuantity,
+            displayUnitNameSnapshot: "Gram",
+            displayUnitSymbolSnapshot: "g",
+          } : {}),
         });
       }
       const couponPrice = dec(input.couponPrice ?? 0);
