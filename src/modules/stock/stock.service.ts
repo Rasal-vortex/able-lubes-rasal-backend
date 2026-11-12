@@ -37,7 +37,7 @@ export async function createAdjustment(input: any, userId: string) {
           direction: input.direction,
           quantity,
           stockAfter: next,
-          reason: input.reason,
+          reason: input.reason ?? "",
           notes: input.notes ?? null,
           createdById: userId,
         },

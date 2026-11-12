@@ -15,7 +15,7 @@ export const adjustmentSchema = z.object({
       "Quantity must be positive and within the supported range",
     ),
   direction: z.enum(["IN", "OUT"]),
-  reason: z.string().trim().min(1).max(200),
+  reason: z.string().trim().max(200).optional().default(""),
   notes: z.string().trim().max(1000).optional().nullable(),
 });
 export const movementListSchema = paginationSchema.extend({

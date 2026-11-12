@@ -112,7 +112,7 @@ export const openApiDocument = {
         },
       },
       post: {
-        summary: "Adjust product stock (admin only)",
+        summary: "Adjust product stock (admin only; reason optional)",
         security: [{ bearerAuth: [] }],
         responses: {
           "201": { description: "Stock movement and resulting stock" },
