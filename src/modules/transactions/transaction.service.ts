@@ -5,12 +5,13 @@ import { ApiError } from "../../shared/errors.js";
 import { calculateInvoice, calculateLine } from "../../shared/money.js";
 import { validateQuantity } from "../../shared/quantity.js";
 
-const dec = (n: number | string) => new Prisma.Decimal(n);
+const dec = (n: Prisma.Decimal | number | string) => new Prisma.Decimal(n);
 function aggregateItems(
   items: Array<{
     productId: string;
     quantity: number;
     discountAmount: number;
+    unitSellingPrice?: number;
     supplierRate?: number;
     displayQuantity?: number;
     displayUnitName?: string;
