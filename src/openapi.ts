@@ -34,6 +34,21 @@ export const openApiDocument = {
         },
       },
     },
+    "/auth/refresh": {
+      post: {
+        summary: "Issue a fresh access token from the HttpOnly refresh-session cookie",
+        responses: {
+          "200": { description: "Refreshed access token and user profile" },
+          "401": { description: "Refresh session is missing, expired, or revoked" },
+        },
+      },
+    },
+    "/auth/logout": {
+      post: {
+        summary: "Revoke the current refresh session and clear its cookie",
+        responses: { "200": { description: "Logged out" } },
+      },
+    },
     "/auth/users": {
       post: {
         summary: "Create a user (admin only)",
@@ -196,7 +211,8 @@ export const openApiDocument = {
     },
     "/sales": {
       post: {
-        summary: "Post sale, optionally apply coupon, and deduct inventory",
+        summary: "Post sale with optional per-item selling prices, optional coupon, and inventory deduction",
+        description: "Each sale item may provide unitSellingPrice. When omitted, the product's current selling price is used.",
         security: [{ bearerAuth: [] }],
         responses: {
           "201": { description: "Posted invoice" },
@@ -237,14 +253,16 @@ export const openApiDocument = {
     },
     "/customer-payments": {
       post: {
-        summary: "Record a Cash, UPI, or Coupon payment against one invoice; split-sale coupon payments use an unrecorded code that cannot be reused",
+        summary: "Record a Cash, UPI, or coupon-amount payment against one invoice; coupon codes are optional",
+        description: "A coupon payment can be recorded by amount alone. If a coupon code is provided, it must be unrecorded and unused. Code-less coupon payments are stored as Coupon payment (no code) and are not coupon-code redemptions.",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
       },
     },
     "/supplier-payments": {
       post: {
-        summary: "Record supplier payment against one purchase",
+        summary: "Record a supplier payment and allocate it to the oldest outstanding purchases first",
+        description: "purchaseId identifies a purchase for the selected supplier; amount may exceed that invoice balance but must not exceed the supplier's total outstanding. The payment is allocated oldest-first across that supplier's posted purchases.",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
       },

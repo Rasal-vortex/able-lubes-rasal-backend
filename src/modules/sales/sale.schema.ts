@@ -14,6 +14,7 @@ const saleLineSchema = z.object({
       (v) => Number(v) > 0 && Number(v) <= 999999,
       "Quantity must be positive and within the supported range",
     ),
+  unitSellingPrice: z.coerce.number().finite().min(0).max(9999999999.99).optional(),
   displayQuantity: z.coerce.number().finite().int().positive().max(999999999).optional(),
   displayUnitName: z.literal("Gram").optional(),
   displayUnitSymbol: z.literal("g").optional(),

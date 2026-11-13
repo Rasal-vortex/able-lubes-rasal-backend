@@ -65,9 +65,21 @@ export const reportModel = {
         where: { status: "POSTED" },
         select: {
           id: true, purchaseNumber: true, purchaseDate: true, totalAmount: true,
+          supplierInvoiceNumber: true,
+          items: {
+            select: {
+              id: true, quantity: true, supplierRate: true, lineTotal: true,
+              unitNameSnapshot: true, unitSymbolSnapshot: true,
+              product: { select: { id: true, name: true } },
+            },
+          },
           payments: { select: { id: true, amount: true, method: true, paymentDate: true } },
         },
-        orderBy: { purchaseDate: "desc" },
+        orderBy: [
+          { purchaseDate: "asc" },
+          { createdAt: "asc" },
+          { id: "asc" },
+        ],
       },
     },
   }),

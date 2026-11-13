@@ -62,35 +62,44 @@ export async function createSale(input: any) {
               throw new ApiError(400, "Gram quantity must match the product quantity in kilograms");
           }
         }
-        const quantity = totalQuantity(rows);
-        const displayQuantity = hasGramDisplay
-          ? totalQuantity(rows.map((row) => ({ quantity: row.displayQuantity! })))
-          : undefined;
-        const discount = totalDiscount(rows);
-        let calculated;
-        try {
-          calculated = calculateLine(product.sellingPrice, quantity, discount);
-        } catch {
-          throw new ApiError(400, "Line discount cannot exceed line value");
+        const priceGroups = new Map<string, typeof rows>();
+        for (const row of rows) {
+          const rate = dec(row.unitSellingPrice ?? product.sellingPrice);
+          const key = rate.toFixed(2);
+          priceGroups.set(key, [...(priceGroups.get(key) ?? []), row]);
         }
-        subtotal = subtotal.add(calculated.subtotal);
-        lineDiscounts = lineDiscounts.add(calculated.discountAmount);
-        lines.push({
-          productId,
-          quantity,
-          unitSellingPrice: product.sellingPrice,
-          discountAmount: calculated.discountAmount,
-          lineTotal: calculated.total,
-          historicalCostSnapshot: product.purchaseRate,
-          unitNameSnapshot: product.unit.name,
-          unitSymbolSnapshot: product.unit.symbol,
-          unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
-          ...(displayQuantity ? {
-            displayQuantity,
-            displayUnitNameSnapshot: "Gram",
-            displayUnitSymbolSnapshot: "g",
-          } : {}),
-        });
+        for (const [price, priceRows] of priceGroups) {
+          const rate = dec(price);
+          const quantity = totalQuantity(priceRows);
+          const displayQuantity = hasGramDisplay
+            ? totalQuantity(priceRows.map((row) => ({ quantity: row.displayQuantity! })))
+            : undefined;
+          const discount = totalDiscount(priceRows);
+          let calculated;
+          try {
+            calculated = calculateLine(rate, quantity, discount);
+          } catch {
+            throw new ApiError(400, "Line discount cannot exceed line value");
+          }
+          subtotal = subtotal.add(calculated.subtotal);
+          lineDiscounts = lineDiscounts.add(calculated.discountAmount);
+          lines.push({
+            productId,
+            quantity,
+            unitSellingPrice: rate,
+            discountAmount: calculated.discountAmount,
+            lineTotal: calculated.total,
+            historicalCostSnapshot: product.purchaseRate,
+            unitNameSnapshot: product.unit.name,
+            unitSymbolSnapshot: product.unit.symbol,
+            unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
+            ...(displayQuantity ? {
+              displayQuantity,
+              displayUnitNameSnapshot: "Gram",
+              displayUnitSymbolSnapshot: "g",
+            } : {}),
+          });
+        }
       }
       const couponPrice = dec(input.couponPrice ?? 0);
       const invoiceDiscount = dec(input.discountAmount).add(couponPrice);

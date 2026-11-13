@@ -184,10 +184,21 @@ export async function supplierLedger(id: string) {
     return {
       id: purchase.id,
       purchaseNumber: purchase.purchaseNumber,
+      supplierInvoiceNumber: purchase.supplierInvoiceNumber,
       date: purchase.purchaseDate,
       total: purchase.totalAmount.toFixed(2),
       paid: purchasePaid.toFixed(2),
       outstanding: Prisma.Decimal.max(decimal(0), purchase.totalAmount.sub(purchasePaid)).toFixed(2),
+      items: purchase.items.map((item) => ({
+        id: item.id,
+        productId: item.product.id,
+        productName: item.product.name,
+        quantity: item.quantity.toString(),
+        unitName: item.unitNameSnapshot,
+        unitSymbol: item.unitSymbolSnapshot,
+        purchaseRate: item.supplierRate.toFixed(2),
+        lineTotal: item.lineTotal.toFixed(2),
+      })),
       payments: purchase.payments.map((payment) => ({
         id: payment.id, amount: payment.amount.toFixed(2), method: payment.method, date: payment.paymentDate,
       })),

@@ -11,7 +11,7 @@ import { openApiDocument } from "./openapi.js";
 const app = express();
 app.disable("x-powered-by");
 app.use(helmet());
-app.use(cors({ origin: env.CORS_ORIGIN.split(",").map((x) => x.trim()) }));
+app.use(cors({ origin: env.CORS_ORIGIN.split(",").map((x) => x.trim()), credentials: true }));
 app.use(morgan(env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(express.json({ limit: "1mb" }));
 
