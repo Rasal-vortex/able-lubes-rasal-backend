@@ -136,6 +136,7 @@ export async function dailySales(date: string) {
 export async function profitReport(from: Date, to: Date) {
   const rows = await reportModel.sales(from, to);
   const expenses = await reportModel.expenses(from, to);
+  const netSales = decimal(sum(rows.map((row) => row.totalAmount)));
   let totalProfit = decimal(0);
   const invoices = rows.map((sale) => {
     const lineRevenueTotal = sale.items.reduce((value, item) => value.add(item.lineTotal), decimal(0));
@@ -164,6 +165,7 @@ export async function profitReport(from: Date, to: Date) {
   const totalExpenses = decimal(sum(expenses.map((row) => row.amount)));
   return {
     totals: {
+      netSales: netSales.toFixed(2),
       totalProfit: totalProfit.toFixed(2),
       totalExpenses: totalExpenses.toFixed(2),
       finalProfit: totalProfit.sub(totalExpenses).toFixed(2),

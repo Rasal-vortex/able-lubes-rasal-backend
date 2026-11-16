@@ -17,12 +17,26 @@ export const openApiDocument = {
       get: {
         summary: "CRM Overview dashboard summary",
         security: [{ bearerAuth: [] }],
-        parameters: [{
-          name: "month", in: "query", required: false,
-          schema: { type: "string", pattern: "^\\d{4}-(0[1-9]|1[0-2])$", example: "2026-11" },
-          description: "Month to return daily paid and credit sales for, in YYYY-MM format",
-        }],
-        responses: { "200": { description: "Today totals, outstanding balances, monthly count, chart data and latest sales" } },
+        parameters: [
+          {
+            name: "month",
+            in: "query",
+            required: false,
+            schema: {
+              type: "string",
+              pattern: "^\\d{4}-(0[1-9]|1[0-2])$",
+              example: "2026-11",
+            },
+            description:
+              "Month to return daily paid and credit sales for, in YYYY-MM format",
+          },
+        ],
+        responses: {
+          "200": {
+            description:
+              "Today totals, outstanding balances, monthly count, chart data and latest sales",
+          },
+        },
       },
     },
     "/auth/login": {
@@ -36,10 +50,13 @@ export const openApiDocument = {
     },
     "/auth/refresh": {
       post: {
-        summary: "Issue a fresh access token from the HttpOnly refresh-session cookie",
+        summary:
+          "Issue a fresh access token from the HttpOnly refresh-session cookie",
         responses: {
           "200": { description: "Refreshed access token and user profile" },
-          "401": { description: "Refresh session is missing, expired, or revoked" },
+          "401": {
+            description: "Refresh session is missing, expired, or revoked",
+          },
         },
       },
     },
@@ -211,8 +228,10 @@ export const openApiDocument = {
     },
     "/sales": {
       post: {
-        summary: "Post sale with optional per-item selling prices, optional coupon, and inventory deduction",
-        description: "Each sale item may provide unitSellingPrice. When omitted, the product's current selling price is used.",
+        summary:
+          "Post sale with optional per-item selling prices, optional coupon, and inventory deduction",
+        description:
+          "Each sale item may provide unitSellingPrice. When omitted, the product's current selling price is used. Provide creditBill metadata for customer credit sales so they remain listed after reload.",
         security: [{ bearerAuth: [] }],
         responses: {
           "201": { description: "Posted invoice" },
@@ -253,18 +272,41 @@ export const openApiDocument = {
     },
     "/customer-payments": {
       post: {
-        summary: "Record a Cash, UPI, or coupon-amount payment against one invoice; coupon codes are optional",
-        description: "A coupon payment can be recorded by amount alone. If a coupon code is provided, it must be unrecorded and unused. Code-less coupon payments are stored as Coupon payment (no code) and are not coupon-code redemptions.",
+        summary:
+          "Record a Cash, UPI, or coupon-amount payment against one invoice; coupon codes are optional",
+        description:
+          "A coupon payment can be recorded by amount alone. If a coupon code is provided, it must be unrecorded and unused. Code-less coupon payments are stored as Coupon payment (no code) and are not coupon-code redemptions.",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
       },
     },
     "/supplier-payments": {
       post: {
-        summary: "Record a supplier payment and allocate it to the oldest outstanding purchases first",
-        description: "purchaseId identifies a purchase for the selected supplier; amount may exceed that invoice balance but must not exceed the supplier's total outstanding. The payment is allocated oldest-first across that supplier's posted purchases.",
+        summary:
+          "Record a supplier payment and allocate it to the oldest outstanding purchases first",
+        description:
+          "For compatibility, provide either amount and method (CASH or UPI), or a tenders array containing Cash and/or UPI amounts. purchaseId identifies a purchase for the selected supplier; the combined payment may exceed that invoice balance but must not exceed the supplier's total outstanding. Each tender is allocated oldest-first across that supplier's posted purchases and stored as a separate payment method entry.",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
+      },
+    },
+    "/credit-bills": {
+      get: {
+        summary: "List persisted manual and sales-linked customer credit bills with current balances",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Customer credit bills with payment history and outstanding balances" } },
+      },
+      post: {
+        summary: "Create a manual customer credit bill",
+        security: [{ bearerAuth: [] }],
+        responses: { "201": { description: "Created customer credit bill" } },
+      },
+    },
+    "/credit-bills/{id}/payments": {
+      post: {
+        summary: "Record a Cash or UPI payment against a manual customer credit bill",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Updated credit bill balance" } },
       },
     },
     "/expenses": {
@@ -303,7 +345,12 @@ export const openApiDocument = {
       get: {
         summary: "Sales report by date range",
         security: [{ bearerAuth: [] }],
-        responses: { "200": { description: "Date-range sales totals and invoices with item lines, historical units, and payment rows" } },
+        responses: {
+          "200": {
+            description:
+              "Date-range sales totals and invoices with item lines, historical units, and payment rows",
+          },
+        },
       },
     },
     "/reports/purchases": {
@@ -333,18 +380,44 @@ export const openApiDocument = {
     },
     "/reports/suppliers/{id}/ledger": {
       get: {
-        summary: "Get an individual supplier ledger with aggregate outstanding balance",
+        summary:
+          "Get an individual supplier ledger with aggregate outstanding balance",
         security: [{ bearerAuth: [] }],
-        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-        responses: { "200": { description: "Supplier, total billed, total paid, total outstanding, and purchase/payment history" } },
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", format: "uuid" },
+          },
+        ],
+        responses: {
+          "200": {
+            description:
+              "Supplier, total billed, total paid, total outstanding, and purchase/payment history",
+          },
+        },
       },
     },
     "/reports/daily-sales": {
       get: {
-        summary: "Received customer payments for a business date, with invoice product lines",
+        summary:
+          "Received customer payments for a business date, with invoice product lines",
         security: [{ bearerAuth: [] }],
-        parameters: [{ name: "date", in: "query", required: true, schema: { type: "string", format: "date" } }],
-        responses: { "200": { description: "Only payments received on the requested date, grouped by invoice and payment method" } },
+        parameters: [
+          {
+            name: "date",
+            in: "query",
+            required: true,
+            schema: { type: "string", format: "date" },
+          },
+        ],
+        responses: {
+          "200": {
+            description:
+              "Only payments received on the requested date, grouped by invoice and payment method",
+          },
+        },
       },
     },
     "/reports/profit": {
@@ -352,10 +425,25 @@ export const openApiDocument = {
         summary: "Profit less expenses for a date range",
         security: [{ bearerAuth: [] }],
         parameters: [
-          { name: "from", in: "query", required: true, schema: { type: "string", format: "date-time" } },
-          { name: "to", in: "query", required: true, schema: { type: "string", format: "date-time" } },
+          {
+            name: "from",
+            in: "query",
+            required: true,
+            schema: { type: "string", format: "date-time" },
+          },
+          {
+            name: "to",
+            in: "query",
+            required: true,
+            schema: { type: "string", format: "date-time" },
+          },
         ],
-        responses: { "200": { description: "Item profit using sale-time purchase costs, total expenses, and final profit" } },
+        responses: {
+          "200": {
+            description:
+              "Item profit using sale-time purchase costs, total expenses, and final profit",
+          },
+        },
       },
     },
     "/reports/monthly": {

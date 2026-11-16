@@ -130,7 +130,7 @@ export async function createSale(input: any) {
             `Insufficient stock for product ${productById.get(productId)!.name}`,
           );
       }
-      return tx.sale.create({
+      const sale = await tx.sale.create({
         data: {
           invoiceNumber: `AL-${Date.now()}-${randomUUID().slice(0, 8).toUpperCase()}`,
           customerId: input.customerId ?? null,
@@ -159,8 +159,25 @@ export async function createSale(input: any) {
           coupon: true,
         },
       });
+      if (input.creditBill) {
+        if (!sale.customerId)
+          throw new ApiError(400, "A customer is required for a credit bill");
+        await tx.customerCreditBill.create({
+          data: {
+            customerId: sale.customerId,
+            saleId: sale.id,
+            billNumber: input.creditBill.billNumber,
+            billDate: sale.billDate,
+            dueDate: input.creditBill.dueDate,
+            term: input.creditBill.term,
+            billAmount: sale.totalAmount,
+            priorBalance: input.creditBill.priorBalance ?? dec(0),
+          },
+        });
+      }
+      return sale;
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },
   );
 }
 

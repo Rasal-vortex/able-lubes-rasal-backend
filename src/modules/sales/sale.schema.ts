@@ -27,6 +27,12 @@ const saleLineSchema = z.object({
 export const createSaleSchema = z
   .object({
     customerId: z.uuid().optional().nullable(),
+    creditBill: z.object({
+      billNumber: z.string().trim().min(1).max(80),
+      dueDate: z.coerce.date(),
+      term: z.string().trim().min(1).max(80),
+      priorBalance: z.coerce.number().finite().min(0).max(9999999999.99).default(0),
+    }).optional(),
     billDate: z.coerce.date().optional(),
     discountAmount: z.coerce.number().finite().min(0).default(0),
     couponCode: z.string().trim().min(1).max(80).toUpperCase().optional(),

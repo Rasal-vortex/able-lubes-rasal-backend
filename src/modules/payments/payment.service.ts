@@ -86,48 +86,69 @@ export async function recordSupplierPayment(input: any) {
           400,
           "Payment supplier must match the purchase supplier",
         );
-      const paymentAmount = amount(input.amount);
+      const tenders: Array<{ method: "CASH" | "UPI"; amount: Prisma.Decimal }> =
+        input.tenders
+          ? input.tenders.map(
+              (tender: {
+                method: "CASH" | "UPI";
+                amount: number | string;
+              }) => ({
+                method: tender.method,
+                amount: amount(tender.amount),
+              }),
+            )
+          : [{ method: input.method, amount: amount(input.amount) }];
+      const paymentAmount = tenders.reduce(
+        (total, tender) => total.add(tender.amount),
+        amount(0),
+      );
       const purchases = await tx.purchase.findMany({
         where: { supplierId: input.supplierId, status: "POSTED" },
-        orderBy: [
-          { purchaseDate: "asc" },
-          { createdAt: "asc" },
-          { id: "asc" },
-        ],
+        orderBy: [{ purchaseDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
         include: { payments: { select: { amount: true } } },
       });
-      let remainingPayment = paymentAmount;
-      const allocations: Array<{
-        purchaseId: string;
-        purchaseNumber: string;
-        amount: Prisma.Decimal;
-      }> = [];
+      const outstandingByPurchase = new Map<string, Prisma.Decimal>();
       for (const purchase of purchases) {
         const alreadyPaid = purchase.payments.reduce(
           (total, payment) => total.add(payment.amount),
           amount(0),
         );
-        const outstanding = Prisma.Decimal.max(
-          amount(0),
-          purchase.totalAmount.sub(alreadyPaid),
+        outstandingByPurchase.set(
+          purchase.id,
+          Prisma.Decimal.max(amount(0), purchase.totalAmount.sub(alreadyPaid)),
         );
-        if (outstanding.isZero()) continue;
-        const allocation = Prisma.Decimal.min(outstanding, remainingPayment);
-        if (allocation.gt(0)) {
-          allocations.push({
-            purchaseId: purchase.id,
-            purchaseNumber: purchase.purchaseNumber,
-            amount: allocation,
-          });
-          remainingPayment = remainingPayment.sub(allocation);
-        }
-        if (remainingPayment.isZero()) break;
       }
-      if (remainingPayment.gt(0))
-        throw new ApiError(
-          400,
-          "Payment exceeds this supplier's total outstanding balance",
-        );
+      const allocations: Array<{
+        purchaseId: string;
+        purchaseNumber: string;
+        method: "CASH" | "UPI";
+        amount: Prisma.Decimal;
+      }> = [];
+      for (const tender of tenders) {
+        let remainingTender = tender.amount;
+        for (const purchase of purchases) {
+          const outstanding =
+            outstandingByPurchase.get(purchase.id) ?? amount(0);
+          if (outstanding.isZero()) continue;
+          const allocation = Prisma.Decimal.min(outstanding, remainingTender);
+          if (allocation.gt(0)) {
+            allocations.push({
+              purchaseId: purchase.id,
+              purchaseNumber: purchase.purchaseNumber,
+              method: tender.method,
+              amount: allocation,
+            });
+            outstandingByPurchase.set(purchase.id, outstanding.sub(allocation));
+            remainingTender = remainingTender.sub(allocation);
+          }
+          if (remainingTender.isZero()) break;
+        }
+        if (remainingTender.gt(0))
+          throw new ApiError(
+            400,
+            "Payment exceeds this supplier's total outstanding balance",
+          );
+      }
       const paymentGroupId = randomUUID();
       const payments = await Promise.all(
         allocations.map((allocation) =>
@@ -138,7 +159,7 @@ export async function recordSupplierPayment(input: any) {
               paymentGroupId,
               amount: allocation.amount,
               paymentDate: input.paymentDate ?? new Date(),
-              method: input.method,
+              method: allocation.method,
               notes: input.notes,
             },
           }),
@@ -151,6 +172,7 @@ export async function recordSupplierPayment(input: any) {
         allocations: allocations.map((allocation) => ({
           purchaseId: allocation.purchaseId,
           purchaseNumber: allocation.purchaseNumber,
+          method: allocation.method,
           amount: allocation.amount.toFixed(2),
         })),
         payments: payments.map(paymentSerializer),
