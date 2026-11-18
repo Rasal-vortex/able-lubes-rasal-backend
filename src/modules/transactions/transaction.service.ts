@@ -1,11 +1,13 @@
 import { Prisma } from "../../../generated/prisma/client.js";
-import { randomUUID } from "node:crypto";
 import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { calculateInvoice, calculateLine } from "../../shared/money.js";
 import { validateQuantity } from "../../shared/quantity.js";
 
 const dec = (n: Prisma.Decimal | number | string) => new Prisma.Decimal(n);
+const invoiceDateKey = (date: Date) =>
+  `${String(date.getUTCFullYear()).slice(-2)}${String(date.getUTCMonth() + 1).padStart(2, "0")}${String(date.getUTCDate()).padStart(2, "0")}`;
+
 function aggregateItems(
   items: Array<{
     productId: string;
@@ -28,9 +30,19 @@ const totalQuantity = (rows: Array<{ quantity: number }>) =>
 const totalDiscount = (rows: Array<{ discountAmount: number }>) =>
   rows.reduce((total, row) => total.add(dec(row.discountAmount)), dec(0));
 
-export async function createSale(input: any) {
-  return prisma.$transaction(
+export async function createSale(input: any, attempt = 0) {
+  try {
+    return await prisma.$transaction(
     async (tx) => {
+      const billDate = input.billDate ?? new Date();
+      const dateKey = invoiceDateKey(billDate);
+      const invoiceCounter = await tx.saleInvoiceCounter.upsert({
+        where: { dateKey },
+        create: { dateKey, lastSequence: 1 },
+        update: { lastSequence: { increment: 1 } },
+        select: { lastSequence: true },
+      });
+      const invoiceNumber = `AL-${dateKey}-${String(invoiceCounter.lastSequence).padStart(3, "0")}`;
       const grouped = aggregateItems(input.items);
       const products = await tx.product.findMany({
         where: { id: { in: [...grouped.keys()] }, active: true },
@@ -132,9 +144,9 @@ export async function createSale(input: any) {
       }
       const sale = await tx.sale.create({
         data: {
-          invoiceNumber: `AL-${Date.now()}-${randomUUID().slice(0, 8).toUpperCase()}`,
+          invoiceNumber,
           customerId: input.customerId ?? null,
-          billDate: input.billDate ?? new Date(),
+          billDate,
           subtotal: totals.subtotal,
           discountAmount: totals.discountAmount,
           totalAmount: totals.total,
@@ -178,7 +190,16 @@ export async function createSale(input: any) {
       return sale;
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },
-  );
+    );
+  } catch (error) {
+    const isSerializationConflict =
+      error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
+    if (isSerializationConflict && attempt < 4) {
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+      return createSale(input, attempt + 1);
+    }
+    throw error;
+  }
 }
 
 export async function updateSaleCoupon(id: string, input: any) {

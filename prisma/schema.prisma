@@ -203,6 +203,13 @@ model Sale {
   @@map("sales")
 }
 
+model SaleInvoiceCounter {
+  dateKey      String @id @map("date_key") @db.VarChar(6)
+  lastSequence Int    @default(0) @map("last_sequence")
+
+  @@map("sale_invoice_counters")
+}
+
 model Coupon {
   id          String   @id @default(uuid()) @db.Uuid
   code        String   @unique
