@@ -6,7 +6,7 @@ const productFields = z.object({
   name: z.string().trim().min(1).max(160),
   brandId: z.uuid(),
   unitId: z.uuid(),
-  purchaseRate: money,
+  purchaseRate: money.min(0.01),
   sellingPrice: money,
   mrp: money.nullable().optional(),
   qty: z
