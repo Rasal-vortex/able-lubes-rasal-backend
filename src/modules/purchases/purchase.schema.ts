@@ -14,7 +14,7 @@ const purchaseLineSchema = z.object({
       (v) => Number(v) > 0 && Number(v) <= 999999,
       "Quantity must be positive and within the supported range",
     ),
-  supplierRate: z.coerce.number().finite().min(0).max(9999999999.99),
+  supplierRate: z.coerce.number().finite().min(0.01).max(9999999999.99),
 });
 export const createPurchaseSchema = z.object({
   supplierId: z.uuid(),
