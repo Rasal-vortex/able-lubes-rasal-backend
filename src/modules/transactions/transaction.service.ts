@@ -1,4 +1,5 @@
 import { Prisma } from "../../../generated/prisma/client.js";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { calculateInvoice, calculateLine } from "../../shared/money.js";
