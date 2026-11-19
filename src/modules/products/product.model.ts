@@ -6,13 +6,13 @@ export const productModel = {
       skip,
       take,
       orderBy: { name: "asc" },
-      include: { brand: true, unit: true },
+      include: { brand: true, unit: true, inventoryBatches: { where: { status: "ACTIVE", remainingQuantity: { gt: 0 } }, orderBy: { receivedAt: "asc" } } },
     }),
   count: (where: any) => prisma.product.count({ where }),
   get: (id: string) =>
     prisma.product.findUnique({
       where: { id },
-      include: { brand: true, unit: true },
+      include: { brand: true, unit: true, inventoryBatches: { where: { status: "ACTIVE", remainingQuantity: { gt: 0 } }, orderBy: { receivedAt: "asc" } } },
     }),
 
   create: (data: any) => prisma.product.create({ data }),

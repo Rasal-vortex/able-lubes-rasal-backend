@@ -4,6 +4,7 @@ import { pageMeta } from "../../shared/pagination.js";
 import { productModel } from "./product.model.js";
 import { productSerializer } from "./product.serializer.js";
 import { validateQuantity } from "../../shared/quantity.js";
+import { Prisma } from "../../../generated/prisma/client.js";
 
 export async function listProducts(query: any) {
   const { page, limit, search, active } = query;
@@ -57,10 +58,24 @@ export async function createProduct(data: any, userId: string) {
         data: { ...product, currentStock: qty },
         include: { brand: true, unit: true },
       });
-      if (Number(qty) > 0)
+      if (Number(qty) > 0) {
+        const openingBatch = await tx.inventoryBatch.create({
+          data: {
+            productId: created.id,
+            label: "Opening stock",
+            receivedQuantity: qty,
+            remainingQuantity: qty,
+            purchaseRate: created.purchaseRate,
+            sellingRate: created.sellingPrice,
+            receivedAt: new Date(),
+            source: "OPENING",
+            status: "ACTIVE",
+          },
+        });
         await tx.stockMovement.create({
           data: {
             productId: created.id,
+            inventoryBatchId: openingBatch.id,
             type: "OPENING_STOCK",
             direction: "IN",
             quantity: qty,
@@ -69,51 +84,75 @@ export async function createProduct(data: any, userId: string) {
             createdById: userId,
           },
         });
-      return created;
+      }
+      return tx.product.findUniqueOrThrow({
+        where: { id: created.id },
+        include: {
+          brand: true,
+          unit: true,
+          inventoryBatches: {
+            where: { status: "ACTIVE", remainingQuantity: { gt: 0 } },
+          },
+        },
+      });
     }),
   );
 }
 
 export async function updateProduct(id: string, data: any) {
   return productSerializer(
-    await prisma.$transaction(async (tx) => {
-      const product = await tx.product.findUnique({
-        where: { id },
-        include: { unit: true, brand: true },
-      });
-      if (!product) throw new ApiError(404, "Product not found");
-      const sellingPrice = data.sellingPrice ?? product.sellingPrice;
-      const mrp = data.mrp !== undefined ? data.mrp : product.mrp;
-      if (
-        (data.mrp !== undefined || data.sellingPrice !== undefined) &&
-        mrp != null &&
-        Number(mrp) <= Number(sellingPrice)
-      )
-        throw new ApiError(400, "MRP must be greater than selling price");
-      if (
-        data.brandId &&
-        !(await tx.brand.findFirst({
-          where: { id: data.brandId, active: true },
-          select: { id: true },
-        }))
-      )
-        throw new ApiError(400, "Brand is missing or inactive");
-      if (data.unitId) {
-        const unit = await tx.unit.findFirst({
-          where: { id: data.unitId, active: true },
+    await prisma.$transaction(
+      async (tx) => {
+        const product = await tx.product.findUnique({
+          where: { id },
+          include: { unit: true, brand: true },
         });
-        if (!unit) throw new ApiError(400, "Unit is missing or inactive");
-        if (data.unitId !== product.unitId) {
-          if (product.currentStock.gt(0))
-            validateQuantity(product.currentStock.toString(), unit);
+        if (!product) throw new ApiError(404, "Product not found");
+        const sellingPrice = data.sellingPrice ?? product.sellingPrice;
+        const mrp = data.mrp !== undefined ? data.mrp : product.mrp;
+        if (
+          (data.mrp !== undefined || data.sellingPrice !== undefined) &&
+          mrp != null &&
+          Number(mrp) <= Number(sellingPrice)
+        )
+          throw new ApiError(400, "MRP must be greater than selling price");
+        if (
+          data.brandId &&
+          !(await tx.brand.findFirst({
+            where: { id: data.brandId, active: true },
+            select: { id: true },
+          }))
+        )
+          throw new ApiError(400, "Brand is missing or inactive");
+        if (data.unitId) {
+          const unit = await tx.unit.findFirst({
+            where: { id: data.unitId, active: true },
+          });
+          if (!unit) throw new ApiError(400, "Unit is missing or inactive");
+          if (data.unitId !== product.unitId) {
+            const [saleHistory, purchaseHistory, stockHistory] =
+              await Promise.all([
+                tx.saleItem.count({ where: { productId: id } }),
+                tx.purchaseItem.count({ where: { productId: id } }),
+                tx.stockMovement.count({ where: { productId: id } }),
+              ]);
+            if (saleHistory > 0 || purchaseHistory > 0 || stockHistory > 0)
+              throw new ApiError(
+                409,
+                "The product unit cannot be changed because transaction or stock history exists.",
+              );
+            if (product.currentStock.gt(0))
+              validateQuantity(product.currentStock.toString(), unit);
+          }
         }
-      }
-      const updated = await tx.product.update({
-        where: { id },
-        data,
-        include: { unit: true, brand: true },
-      });
-      return updated;
-    }),
+        const updated = await tx.product.update({
+          where: { id },
+          data,
+          include: { unit: true, brand: true },
+        });
+        return updated;
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    ),
   );
 }

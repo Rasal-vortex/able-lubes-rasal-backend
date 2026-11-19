@@ -58,9 +58,13 @@ describe("canonical unit seeding", () => {
   });
 
   it("stops before seeding when an existing name may be a canonical symbol alias", async () => {
+    const findMany = vi.fn(async () => [
+      { id: "u1", name: "L" },
+      { id: "u2", name: "Bottle" },
+    ]);
     const client = {
       unit: {
-        findMany: async () => [{ id: "u1", name: "L" }],
+        findMany,
         update: vi.fn(),
         create: vi.fn(),
       },
@@ -68,6 +72,7 @@ describe("canonical unit seeding", () => {
     await expect(seedCanonicalUnits(client)).rejects.toThrow(
       /aliases need review/,
     );
+    expect(findMany).toHaveBeenCalledTimes(1);
     expect(client.unit.update).not.toHaveBeenCalled();
     expect(client.unit.create).not.toHaveBeenCalled();
   });

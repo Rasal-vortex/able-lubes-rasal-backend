@@ -161,6 +161,7 @@ export async function recordSupplierPayment(input: any) {
               paymentDate: input.paymentDate ?? new Date(),
               method: allocation.method,
               notes: input.notes,
+              receiptNumber: input.receiptNumber,
             },
           }),
         ),

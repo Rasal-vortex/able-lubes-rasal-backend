@@ -49,48 +49,23 @@ export async function seedCanonicalUnits(client: { unit: any }) {
     );
   }
 
-  // Resolve existing symbol aliases to canonical names.
-  for (const existing of existingUnits) {
+  // A unit name that matches a canonical symbol may represent a referenced
+  // custom unit. Require manual review before any unit rows are changed.
+  const aliases = existingUnits.filter((existing) => {
     const key = normalizeName(existing.name);
+    return canonicalBySymbol.has(key) && !canonicalByName.has(key);
+  });
 
-    if (canonicalByName.has(key)) {
-      continue;
-    }
-
-    const canonical = canonicalBySymbol.get(key);
-
-    if (!canonical) {
-      continue;
-    }
-
-    const canonicalMatch = groups.get(normalizeName(canonical.name))?.[0];
-
-    if (canonicalMatch) {
-      throw new Error(
-        `Cannot automatically merge "${existing.name}" (${existing.id}) ` +
-          `with "${canonical.name}" (${canonicalMatch.id}). ` +
-          `Review product references before merging.`,
-      );
-    }
-
-    await client.unit.update({
-      where: { id: existing.id },
-      data: {
-        name: canonical.name,
-        symbol: canonical.symbol,
-        allowsDecimals: canonical.allowsDecimals,
-      },
-    });
+  if (aliases.length) {
+    throw new Error(
+      `Canonical unit symbol aliases need review before seeding: ${aliases
+        .map((unit) => `"${unit.name}" (${unit.id})`)
+        .join(", ")}`,
+    );
   }
 
-  // Refresh existing units after alias normalization.
-  const refreshedUnits = (await client.unit.findMany()) as Array<{
-    id: string;
-    name: string;
-  }>;
-
   const refreshedGroups = new Map(
-    refreshedUnits.map((unit) => [normalizeName(unit.name), unit]),
+    existingUnits.map((unit) => [normalizeName(unit.name), unit]),
   );
 
   // Create missing units or update existing canonical units.

@@ -10,4 +10,12 @@ export const productSerializer = (p: any) => ({
   unitName: p?.unit?.name,
   unitSymbol: p?.unit?.symbol ?? null,
   unitAllowsDecimals: p?.unit?.allowsDecimals,
+  batches: p?.inventoryBatches?.map((batch: any) => ({
+    id: batch.id,
+    label: batch.label,
+    sellingRate: batch.sellingRate.toString(),
+    remainingQuantity: batch.remainingQuantity.toString(),
+    receivedAt: batch.receivedAt,
+    source: batch.source,
+  })) ?? [],
 });

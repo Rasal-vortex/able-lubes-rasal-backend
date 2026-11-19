@@ -44,13 +44,19 @@ export async function createSale(input: any, attempt = 0) {
         select: { lastSequence: true },
       });
       const invoiceNumber = `AL-${dateKey}-${String(invoiceCounter.lastSequence).padStart(3, "0")}`;
-      const grouped = aggregateItems(input.items);
+      const productIds = [...new Set<string>(input.items.map((item: any) => item.productId))];
+      const batchIds = [...new Set<string>(input.items.map((item: any) => item.inventoryBatchId))];
       const products = await tx.product.findMany({
-        where: { id: { in: [...grouped.keys()] }, active: true },
+        where: { id: { in: productIds }, active: true },
         include: { unit: true },
       });
-      if (products.length !== grouped.size)
+      if (products.length !== productIds.length)
         throw new ApiError(400, "One or more products are missing or inactive");
+      const batches = await tx.inventoryBatch.findMany({ where: {
+        id: { in: batchIds }, status: "ACTIVE", remainingQuantity: { gt: 0 },
+      } });
+      if (batches.length !== batchIds.length)
+        throw new ApiError(409, "One or more selected stock batches are unavailable");
       if (
         input.customerId &&
         !(await tx.customer.findFirst({
@@ -59,61 +65,56 @@ export async function createSale(input: any, attempt = 0) {
         }))
       )
         throw new ApiError(400, "Customer is missing or inactive");
-      const productById = new Map(products.map((p) => [p.id, p]));
+      const productById = new Map<string, (typeof products)[number]>(products.map((p) => [p.id, p]));
+      const batchById = new Map<string, (typeof batches)[number]>(batches.map((batch) => [batch.id, batch]));
       const lines: any[] = [];
+      const quantityByProduct = new Map<string, Prisma.Decimal>();
+      const quantityByBatch = new Map<string, Prisma.Decimal>();
       let subtotal = dec(0);
       let lineDiscounts = dec(0);
-      for (const [productId, rows] of grouped) {
-        const product = productById.get(productId)!;
-        const hasGramDisplay = rows.some((row) => row.displayQuantity !== undefined);
-        if (hasGramDisplay && rows.some((row) => row.displayQuantity === undefined))
-          throw new ApiError(400, "Use one quantity unit for each product line");
-        for (const row of rows) {
-          validateQuantity(row.quantity, product.unit);
-          if (row.displayQuantity !== undefined) {
-            const isKilogram = product.unit.name.trim().toLowerCase() === "kilogram" || product.unit.symbol?.trim().toLowerCase() === "kg";
-            if (!isKilogram || row.displayUnitName !== "Gram" || row.displayUnitSymbol !== "g" || !dec(row.displayQuantity).div(1000).eq(dec(row.quantity)))
-              throw new ApiError(400, "Gram quantity must match the product quantity in kilograms");
-          }
+      for (const row of input.items) {
+        const product = productById.get(row.productId)!;
+        const batch = batchById.get(row.inventoryBatchId)!;
+        if (batch.productId !== product.id)
+          throw new ApiError(400, "Selected batch does not belong to the selected product");
+        validateQuantity(row.quantity, product.unit);
+        if (row.displayQuantity !== undefined) {
+          const isKilogram = product.unit.name.trim().toLowerCase() === "kilogram" || product.unit.symbol?.trim().toLowerCase() === "kg";
+          if (!isKilogram || row.displayUnitName !== "Gram" || row.displayUnitSymbol !== "g" || !dec(row.displayQuantity).div(1000).eq(dec(row.quantity)))
+            throw new ApiError(400, "Gram quantity must match the product quantity in kilograms");
         }
-        const priceGroups = new Map<string, typeof rows>();
-        for (const row of rows) {
-          const rate = dec(row.unitSellingPrice ?? product.sellingPrice);
-          const key = rate.toFixed(2);
-          priceGroups.set(key, [...(priceGroups.get(key) ?? []), row]);
-        }
-        for (const [price, priceRows] of priceGroups) {
-          const rate = dec(price);
-          const quantity = totalQuantity(priceRows);
-          const displayQuantity = hasGramDisplay
-            ? totalQuantity(priceRows.map((row) => ({ quantity: row.displayQuantity! })))
-            : undefined;
-          const discount = totalDiscount(priceRows);
-          let calculated;
-          try {
-            calculated = calculateLine(rate, quantity, discount);
-          } catch {
-            throw new ApiError(400, "Line discount cannot exceed line value");
-          }
-          subtotal = subtotal.add(calculated.subtotal);
-          lineDiscounts = lineDiscounts.add(calculated.discountAmount);
-          lines.push({
-            productId,
-            quantity,
-            unitSellingPrice: rate,
-            discountAmount: calculated.discountAmount,
-            lineTotal: calculated.total,
-            historicalCostSnapshot: product.purchaseRate,
-            unitNameSnapshot: product.unit.name,
-            unitSymbolSnapshot: product.unit.symbol,
-            unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
-            ...(displayQuantity ? {
-              displayQuantity,
-              displayUnitNameSnapshot: "Gram",
-              displayUnitSymbolSnapshot: "g",
-            } : {}),
-          });
-        }
+        const quantity = dec(row.quantity);
+        const priorBatchQuantity = quantityByBatch.get(batch.id) ?? dec(0);
+        const nextBatchQuantity = priorBatchQuantity.add(quantity);
+        if (nextBatchQuantity.gt(batch.remainingQuantity))
+          throw new ApiError(409, `Insufficient stock in selected batch for ${product.name}`);
+        quantityByBatch.set(batch.id, nextBatchQuantity);
+        quantityByProduct.set(product.id, (quantityByProduct.get(product.id) ?? dec(0)).add(quantity));
+        const rate = dec(row.unitSellingPrice ?? batch.sellingRate);
+        let calculated;
+        try { calculated = calculateLine(rate, quantity, dec(row.discountAmount)); }
+        catch { throw new ApiError(400, "Line discount cannot exceed line value"); }
+        subtotal = subtotal.add(calculated.subtotal);
+        lineDiscounts = lineDiscounts.add(calculated.discountAmount);
+        lines.push({
+          productId: product.id,
+          inventoryBatchId: batch.id,
+          quantity,
+          unitSellingPrice: rate,
+          batchSellingPriceSnapshot: batch.sellingRate,
+          historicalCostSnapshot: batch.purchaseRate,
+          costSnapshotSource: "VERIFIED_BATCH",
+          discountAmount: calculated.discountAmount,
+          lineTotal: calculated.total,
+          unitNameSnapshot: product.unit.name,
+          unitSymbolSnapshot: product.unit.symbol,
+          unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
+          ...(row.displayQuantity !== undefined ? {
+            displayQuantity: dec(row.displayQuantity),
+            displayUnitNameSnapshot: "Gram",
+            displayUnitSymbolSnapshot: "g",
+          } : {}),
+        });
       }
       const couponPrice = dec(input.couponPrice ?? 0);
       const invoiceDiscount = dec(input.discountAmount).add(couponPrice);
@@ -127,8 +128,19 @@ export async function createSale(input: any, attempt = 0) {
         );
       }
       // Conditional decrement is atomic at the row level and prevents concurrent overselling.
-      for (const [productId, rows] of grouped) {
-        const quantity = totalQuantity(rows);
+      for (const [batchId, quantity] of quantityByBatch) {
+        const batch = batchById.get(batchId)!;
+        const changed = await tx.inventoryBatch.updateMany({
+          where: { id: batchId, status: "ACTIVE", remainingQuantity: { gte: quantity } },
+          data: {
+            remainingQuantity: { decrement: quantity },
+            ...(batch.remainingQuantity.eq(quantity) ? { status: "DEPLETED" } : {}),
+          },
+        });
+        if (changed.count !== 1)
+          throw new ApiError(409, "Selected stock batch no longer has enough quantity");
+      }
+      for (const [productId, quantity] of quantityByProduct) {
         const changed = await tx.product.updateMany({
           where: {
             id: productId,
@@ -261,67 +273,44 @@ export async function updateSaleCoupon(id: string, input: any) {
 }
 
 export async function createPurchase(input: any) {
-  return prisma.$transaction(
-    async (tx) => {
-      const grouped = aggregateItems(input.items);
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        const duplicate = await tx.purchase.findUnique({
+          where: { idempotencyKey: input.idempotencyKey },
+          include: { items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true },
+        });
+        if (duplicate) return duplicate;
 
-      const products = await tx.product.findMany({
-        where: { id: { in: [...grouped.keys()] }, active: true },
-        include: { unit: true },
-      });
-      if (products.length !== grouped.size)
-        throw new ApiError(400, "One or more products are missing or inactive");
-      if (
-        !(await tx.supplier.findFirst({
-          where: { id: input.supplierId, active: true },
-          select: { id: true },
-        }))
-      )
-        throw new ApiError(400, "Supplier is missing or inactive");
-      const productById = new Map(products.map((p) => [p.id, p]));
-      const lines: any[] = [];
-      let subtotal = dec(0);
-      for (const [productId, rows] of grouped) {
-        const rate = dec(rows[0].supplierRate!);
-        const product = productById.get(productId)!;
-        for (const row of rows) validateQuantity(row.quantity, product.unit);
-        if (rows.some((r) => !dec(r.supplierRate!).eq(rate)))
-          throw new ApiError(
-            400,
-            "Combine duplicate product lines with the same supplier rate",
-          );
-        const quantity = totalQuantity(rows);
-        const calculated = calculateLine(rate, quantity);
-        subtotal = subtotal.add(calculated.subtotal);
-        lines.push({
-          productId,
-          quantity,
-          supplierRate: rate,
-          lineTotal: calculated.total,
-          unitNameSnapshot: product.unit.name,
-          unitSymbolSnapshot: product.unit.symbol,
-          unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
+        const productIds: string[] = [...new Set<string>(input.items.map((item: any) => item.productId))];
+        const products = await tx.product.findMany({
+          where: { id: { in: productIds }, active: true }, include: { unit: true },
         });
-      }
-      const invoiceDiscount = dec(input.discountAmount);
-      let totals;
-      try {
-        totals = calculateInvoice(subtotal, 0, invoiceDiscount);
-      } catch {
-        throw new ApiError(400, "Purchase discount cannot exceed subtotal");
-      }
-      for (const [productId, rows] of grouped) {
-        const quantity = totalQuantity(rows);
-        await tx.product.update({
-          where: { id: productId },
-          data: {
-            currentStock: { increment: quantity },
-            purchaseRate: dec(rows[0].supplierRate!),
-          },
+        if (products.length !== productIds.length)
+          throw new ApiError(400, "One or more products are missing or inactive");
+        if (!(await tx.supplier.findFirst({ where: { id: input.supplierId, active: true }, select: { id: true } })))
+          throw new ApiError(400, "Supplier is missing or inactive");
+        const productById = new Map<string, (typeof products)[number]>(products.map((p) => [p.id, p]));
+        let subtotal = dec(0);
+        const purchaseLines = input.items.map((row: any) => {
+          const product = productById.get(row.productId)!;
+          validateQuantity(row.quantity, product.unit);
+          const rate = dec(row.supplierRate);
+          const sellingRate = dec(row.sellingRate);
+          const quantity = dec(row.quantity);
+          const line = calculateLine(rate, quantity);
+          subtotal = subtotal.add(line.subtotal);
+          return { product, row, rate, sellingRate, quantity, line };
         });
-      }
-      return tx.purchase.create({
+        let totals;
+        try {
+          totals = calculateInvoice(subtotal, 0, dec(input.discountAmount));
+        } catch {
+          throw new ApiError(400, "Purchase discount cannot exceed subtotal");
+        }
+        const purchase = await tx.purchase.create({
         data: {
+          idempotencyKey: input.idempotencyKey,
           purchaseNumber: `PUR-${Date.now()}-${randomUUID().slice(0, 8).toUpperCase()}`,
           supplierId: input.supplierId,
           supplierInvoiceNumber: input.supplierInvoiceNumber,
@@ -330,16 +319,41 @@ export async function createPurchase(input: any) {
           discountAmount: totals.discountAmount,
           totalAmount: totals.total,
           status: "POSTED",
-          items: { create: lines },
         },
-        include: {
-          items: { include: { product: { include: { unit: true } } } },
-          payments: true,
-        },
+        include: { payments: true },
       });
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-  );
+      for (const { product, row, rate, sellingRate, quantity, line } of purchaseLines) {
+        const purchaseItem = await tx.purchaseItem.create({ data: {
+          purchaseId: purchase.id, productId: product.id, quantity,
+          supplierRate: rate, lineTotal: line.total,
+          unitNameSnapshot: product.unit.name, unitSymbolSnapshot: product.unit.symbol,
+          unitAllowsDecimalsSnapshot: product.unit.allowsDecimals,
+        } });
+        await tx.inventoryBatch.create({ data: {
+          productId: product.id, purchaseItemId: purchaseItem.id,
+          label: null,
+          receivedQuantity: quantity, remainingQuantity: quantity,
+          purchaseRate: rate, sellingRate,
+          receivedAt: input.purchaseDate ?? new Date(), source: "PURCHASE", status: "ACTIVE",
+        } });
+        await tx.product.update({ where: { id: product.id }, data: {
+          currentStock: { increment: quantity }, purchaseRate: rate, sellingPrice: sellingRate,
+        } });
+      }
+      return tx.purchase.findUniqueOrThrow({ where: { id: purchase.id }, include: {
+        items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true,
+      } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const duplicate = await prisma.purchase.findUnique({ where: { idempotencyKey: input.idempotencyKey }, include: {
+        items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true,
+      } });
+      if (duplicate) return duplicate;
+    }
+    throw error;
+  }
 }
 
 export async function cancelSale(id: string) {
@@ -348,7 +362,7 @@ export async function cancelSale(id: string) {
       const sale = await tx.sale.findUnique({
         where: { id },
         include: {
-          items: { include: { product: { include: { unit: true } } } },
+          items: { include: { product: { include: { unit: true } }, inventoryBatch: true } },
           payments: true,
         },
       });
@@ -361,12 +375,60 @@ export async function cancelSale(id: string) {
           409,
           "Sales with recorded payments cannot be cancelled by this API",
         );
-      await tx.sale.update({ where: { id }, data: { status: "CANCELLED" } });
-      for (const item of sale.items)
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { currentStock: { increment: item.quantity } },
+      const quantitiesByBatch = new Map<string, Prisma.Decimal>();
+      const batches = new Map<string, (typeof sale.items)[number]["inventoryBatch"]>();
+      const quantitiesByProduct = new Map<string, Prisma.Decimal>();
+      for (const item of sale.items) {
+        const batch = item.inventoryBatch;
+        if (!item.inventoryBatchId || !batch || batch.productId !== item.productId)
+          throw new ApiError(
+            409,
+            "This sale has no reliable stock batch reference and cannot be safely cancelled",
+          );
+        if (batch.status === "CANCELLED")
+          throw new ApiError(409, "The stock batch for this sale is no longer available");
+        quantitiesByBatch.set(
+          batch.id,
+          (quantitiesByBatch.get(batch.id) ?? dec(0)).add(item.quantity),
+        );
+        batches.set(batch.id, batch);
+        quantitiesByProduct.set(
+          item.productId,
+          (quantitiesByProduct.get(item.productId) ?? dec(0)).add(item.quantity),
+        );
+      }
+      const changedSale = await tx.sale.updateMany({
+        where: { id, status: "POSTED" },
+        data: { status: "CANCELLED" },
+      });
+      if (changedSale.count !== 1)
+        throw new ApiError(409, "Sale status changed while cancellation was being processed");
+      for (const [batchId, quantity] of quantitiesByBatch) {
+        const batch = batches.get(batchId)!;
+        if (batch.remainingQuantity.add(quantity).gt(batch.receivedQuantity))
+          throw new ApiError(409, "Sale quantity cannot be restored to its original stock batch");
+        const changed = await tx.inventoryBatch.updateMany({
+          where: {
+            id: batchId,
+            status: batch.status,
+            remainingQuantity: batch.remainingQuantity,
+          },
+          data: {
+            remainingQuantity: { increment: quantity },
+            status: "ACTIVE",
+          },
         });
+        if (changed.count !== 1)
+          throw new ApiError(409, "Stock batch changed during sale cancellation; retry the request");
+      }
+      for (const [productId, quantity] of quantitiesByProduct) {
+        const changed = await tx.product.updateMany({
+          where: { id: productId },
+          data: { currentStock: { increment: quantity } },
+        });
+        if (changed.count !== 1)
+          throw new ApiError(409, "Product stock could not be restored for this sale");
+      }
       return { ...sale, status: "CANCELLED" };
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -379,7 +441,7 @@ export async function cancelPurchase(id: string) {
       const purchase = await tx.purchase.findUnique({
         where: { id },
         include: {
-          items: { include: { product: { include: { unit: true } } } },
+          items: { include: { product: { include: { unit: true } }, inventoryBatch: true } },
           payments: true,
         },
       });
@@ -392,11 +454,42 @@ export async function cancelPurchase(id: string) {
           409,
           "Purchases with recorded payments cannot be cancelled by this API",
         );
-      await tx.purchase.update({
-        where: { id },
+      for (const item of purchase.items) {
+        const batch = item.inventoryBatch;
+        if (
+          !batch ||
+          batch.productId !== item.productId ||
+          batch.purchaseItemId !== item.id ||
+          batch.source !== "PURCHASE" ||
+          batch.status !== "ACTIVE" ||
+          !batch.remainingQuantity.eq(batch.receivedQuantity)
+        )
+          throw new ApiError(
+            409,
+            "Purchase cannot be cancelled because its stock batch has been sold or adjusted",
+          );
+      }
+      const changedPurchase = await tx.purchase.updateMany({
+        where: { id, status: "POSTED" },
         data: { status: "CANCELLED" },
       });
+      if (changedPurchase.count !== 1)
+        throw new ApiError(409, "Purchase status changed while cancellation was being processed");
       for (const item of purchase.items) {
+        const batch = item.inventoryBatch!;
+        const changedBatch = await tx.inventoryBatch.updateMany({
+          where: {
+            id: batch.id,
+            status: "ACTIVE",
+            remainingQuantity: batch.receivedQuantity,
+          },
+          data: {
+            remainingQuantity: 0,
+            status: "CANCELLED",
+          },
+        });
+        if (changedBatch.count !== 1)
+          throw new ApiError(409, "Purchase batch changed during cancellation; retry the request");
         const changed = await tx.product.updateMany({
           where: { id: item.productId, currentStock: { gte: item.quantity } },
           data: { currentStock: { decrement: item.quantity } },
