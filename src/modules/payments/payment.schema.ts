@@ -39,6 +39,7 @@ export const supplierPaymentSchema = z
       .max(2)
       .optional(),
     notes: z.string().trim().max(1000).optional(),
+    receiptNumber: z.string().trim().max(120).optional(),
   })
   .superRefine((payment, ctx) => {
     const hasLegacyPayment =

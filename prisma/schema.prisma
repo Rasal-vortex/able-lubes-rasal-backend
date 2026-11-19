@@ -49,6 +49,23 @@ enum StockDirection {
   OUT
 }
 
+enum InventoryBatchSource {
+  PURCHASE
+  OPENING
+  ADJUSTMENT
+}
+
+enum InventoryBatchStatus {
+  ACTIVE
+  DEPLETED
+  CANCELLED
+}
+
+enum SaleCostSource {
+  VERIFIED_BATCH
+  LEGACY_ESTIMATE
+}
+
 model User {
   id              String           @id @default(uuid()) @db.Uuid
   name            String
@@ -94,6 +111,7 @@ model Product {
   saleItems      SaleItem[]
   purchaseItems  PurchaseItem[]
   stockMovements StockMovement[]
+  inventoryBatches InventoryBatch[]
 
   @@index([name])
   @@index([brandId])
@@ -129,6 +147,8 @@ model StockMovement {
   id          String            @id @default(uuid()) @db.Uuid
   productId   String            @map("product_id") @db.Uuid
   product     Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  inventoryBatchId String?      @map("inventory_batch_id") @db.Uuid
+  inventoryBatch InventoryBatch? @relation(fields: [inventoryBatchId], references: [id], onDelete: Restrict)
   type        StockMovementType
   direction   StockDirection
   quantity    Decimal           @db.Decimal(12, 3)
@@ -140,6 +160,7 @@ model StockMovement {
   createdAt   DateTime          @default(now()) @map("created_at")
 
   @@index([productId, createdAt])
+  @@index([inventoryBatchId])
   @@index([createdById])
   @@map("stock_movements")
 }
@@ -230,6 +251,8 @@ model SaleItem {
   sale                       Sale     @relation(fields: [saleId], references: [id], onDelete: Restrict)
   productId                  String   @map("product_id") @db.Uuid
   product                    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  inventoryBatchId           String?  @map("inventory_batch_id") @db.Uuid
+  inventoryBatch             InventoryBatch? @relation(fields: [inventoryBatchId], references: [id], onDelete: Restrict)
   quantity                   Decimal  @db.Decimal(12, 3)
   displayQuantity            Decimal? @map("display_quantity") @db.Decimal(12, 3)
   displayUnitNameSnapshot    String?  @map("display_unit_name_snapshot")
@@ -238,12 +261,15 @@ model SaleItem {
   discountAmount             Decimal  @default(0) @map("discount_amount") @db.Decimal(12, 2)
   lineTotal                  Decimal  @map("line_total") @db.Decimal(12, 2)
   historicalCostSnapshot     Decimal? @map("historical_cost_snapshot") @db.Decimal(12, 2)
+  batchSellingPriceSnapshot  Decimal? @map("batch_selling_price_snapshot") @db.Decimal(12, 2)
+  costSnapshotSource         SaleCostSource? @map("cost_snapshot_source")
   unitNameSnapshot           String   @map("unit_name_snapshot")
   unitSymbolSnapshot         String?  @map("unit_symbol_snapshot")
   unitAllowsDecimalsSnapshot Boolean  @map("unit_allows_decimals_snapshot")
 
   @@index([saleId])
   @@index([productId])
+  @@index([inventoryBatchId])
   @@map("sale_items")
 }
 
@@ -300,6 +326,7 @@ model CustomerCreditBillPayment {
 
 model Purchase {
   id                    String         @id @default(uuid()) @db.Uuid
+  idempotencyKey        String?        @unique @map("idempotency_key") @db.Uuid
   purchaseNumber        String         @unique @map("purchase_number")
   supplierId            String         @map("supplier_id") @db.Uuid
   supplier              Supplier       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
@@ -326,6 +353,7 @@ model PurchaseItem {
   purchase                   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
   productId                  String   @map("product_id") @db.Uuid
   product                    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  inventoryBatch             InventoryBatch?
   quantity                   Decimal  @db.Decimal(12, 3)
   supplierRate               Decimal  @map("supplier_rate") @db.Decimal(12, 2)
   lineTotal                  Decimal  @map("line_total") @db.Decimal(12, 2)
@@ -336,6 +364,29 @@ model PurchaseItem {
   @@index([purchaseId])
   @@index([productId])
   @@map("purchase_items")
+}
+
+model InventoryBatch {
+  id                String               @id @default(uuid()) @db.Uuid
+  productId         String               @map("product_id") @db.Uuid
+  product           Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  purchaseItemId    String?              @unique @map("purchase_item_id") @db.Uuid
+  purchaseItem      PurchaseItem?        @relation(fields: [purchaseItemId], references: [id], onDelete: Restrict)
+  label             String?
+  receivedQuantity  Decimal              @map("received_quantity") @db.Decimal(12, 3)
+  remainingQuantity Decimal              @map("remaining_quantity") @db.Decimal(12, 3)
+  purchaseRate      Decimal              @map("purchase_rate") @db.Decimal(12, 2)
+  sellingRate       Decimal              @map("selling_rate") @db.Decimal(12, 2)
+  receivedAt        DateTime             @map("received_at") @db.Timestamptz(3)
+  source            InventoryBatchSource
+  status            InventoryBatchStatus @default(ACTIVE)
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  saleItems         SaleItem[]
+  stockMovements    StockMovement[]
+
+  @@index([productId, status, receivedAt])
+  @@map("inventory_batches")
 }
 
 model SupplierPayment {
@@ -349,6 +400,7 @@ model SupplierPayment {
   paymentDate    DateTime      @map("payment_date") @db.Timestamptz(3)
   method         PaymentMethod
   notes          String?
+  receiptNumber  String?       @map("receipt_number")
   createdAt      DateTime      @default(now()) @map("created_at")
 
   @@index([supplierId, paymentDate])

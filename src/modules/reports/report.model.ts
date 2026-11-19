@@ -15,6 +15,8 @@ export const reportModel = {
           select: {
             id: true, quantity: true, displayQuantity: true, displayUnitNameSnapshot: true, displayUnitSymbolSnapshot: true, unitSellingPrice: true, discountAmount: true,
             lineTotal: true, historicalCostSnapshot: true,
+            costSnapshotSource: true,
+            inventoryBatch: { select: { purchaseRate: true } },
             unitNameSnapshot: true, unitSymbolSnapshot: true,
             product: { select: { id: true, name: true, purchaseRate: true } },
           },
@@ -73,7 +75,7 @@ export const reportModel = {
               product: { select: { id: true, name: true } },
             },
           },
-          payments: { select: { id: true, amount: true, method: true, paymentDate: true } },
+          payments: { select: { id: true, paymentGroupId: true, amount: true, method: true, paymentDate: true, receiptNumber: true } },
         },
         orderBy: [
           { purchaseDate: "asc" },

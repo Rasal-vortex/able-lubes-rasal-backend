@@ -144,7 +144,9 @@ export const openApiDocument = {
         },
       },
       post: {
-        summary: "Adjust product stock (admin only; reason optional)",
+        summary: "Adjust product stock by inventory batch (admin only)",
+        description:
+          "IN adjustments require positive purchaseRate and sellingRate and create a new adjustment batch. OUT adjustments require inventoryBatchId and reduce only that batch. The reason remains optional.",
         security: [{ bearerAuth: [] }],
         responses: {
           "201": { description: "Stock movement and resulting stock" },
@@ -251,7 +253,10 @@ export const openApiDocument = {
     },
     "/purchases": {
       post: {
-        summary: "Post purchase and add inventory",
+        summary:
+          "Post purchase, create one priced stock batch per item, and add inventory",
+        description:
+          "Each item requires a positive supplierRate and sellingRate. idempotencyKey makes retries return the original purchase instead of creating duplicate stock batches.",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Posted purchase" } },
       },
@@ -285,16 +290,22 @@ export const openApiDocument = {
         summary:
           "Record a supplier payment and allocate it to the oldest outstanding purchases first",
         description:
-          "For compatibility, provide either amount and method (CASH or UPI), or a tenders array containing Cash and/or UPI amounts. purchaseId identifies a purchase for the selected supplier; the combined payment may exceed that invoice balance but must not exceed the supplier's total outstanding. Each tender is allocated oldest-first across that supplier's posted purchases and stored as a separate payment method entry.",
+          "For compatibility, provide either amount and method (CASH or UPI), or a tenders array containing Cash and/or UPI amounts. receiptNumber is optional and is stored with the payment for ledger tracing. purchaseId identifies a purchase for the selected supplier; the combined payment may exceed that invoice balance but must not exceed the supplier's total outstanding. Each tender is allocated oldest-first across that supplier's posted purchases and stored as a separate payment method entry.",
         security: [{ bearerAuth: [] }],
         responses: { "201": { description: "Recorded payment" } },
       },
     },
     "/credit-bills": {
       get: {
-        summary: "List persisted manual and sales-linked customer credit bills with current balances",
+        summary:
+          "List persisted manual and sales-linked customer credit bills with current balances",
         security: [{ bearerAuth: [] }],
-        responses: { "200": { description: "Customer credit bills with payment history and outstanding balances" } },
+        responses: {
+          "200": {
+            description:
+              "Customer credit bills with payment history and outstanding balances",
+          },
+        },
       },
       post: {
         summary: "Create a manual customer credit bill",
@@ -304,7 +315,8 @@ export const openApiDocument = {
     },
     "/credit-bills/{id}/payments": {
       post: {
-        summary: "Record a Cash or UPI payment against a manual customer credit bill",
+        summary:
+          "Record a Cash or UPI payment against a manual customer credit bill",
         security: [{ bearerAuth: [] }],
         responses: { "200": { description: "Updated credit bill balance" } },
       },

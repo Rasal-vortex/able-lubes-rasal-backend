@@ -141,7 +141,9 @@ export async function profitReport(from: Date, to: Date) {
   const invoices = rows.map((sale) => {
     const lineRevenueTotal = sale.items.reduce((value, item) => value.add(item.lineTotal), decimal(0));
     const items = sale.items.map((item) => {
-      const costRate = item.historicalCostSnapshot ?? item.product.purchaseRate;
+      const costRate = item.historicalCostSnapshot ?? item.inventoryBatch?.purchaseRate ?? item.product.purchaseRate;
+      const costBasis = item.costSnapshotSource ??
+        (item.inventoryBatch ? "VERIFIED_BATCH" : "LEGACY_ESTIMATE");
       const cost = costRate.mul(item.quantity);
       // Allocate invoice-level discounts proportionally so item profit sums to
       // the actual billed total, while line discounts are already in lineTotal.
@@ -156,6 +158,7 @@ export async function profitReport(from: Date, to: Date) {
         quantity: item.quantity.toString(),
         saleAmount: saleAmount.toFixed(2),
         purchaseRate: costRate.toFixed(2),
+        costBasis,
         cost: cost.toFixed(2),
         profit: profit.toFixed(2),
       };
@@ -202,7 +205,7 @@ export async function supplierLedger(id: string) {
         lineTotal: item.lineTotal.toFixed(2),
       })),
       payments: purchase.payments.map((payment) => ({
-        id: payment.id, amount: payment.amount.toFixed(2), method: payment.method, date: payment.paymentDate,
+        id: payment.id, paymentGroupId: payment.paymentGroupId, amount: payment.amount.toFixed(2), method: payment.method, date: payment.paymentDate, receiptNumber: payment.receiptNumber,
       })),
     };
   });

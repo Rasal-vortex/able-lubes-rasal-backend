@@ -25,11 +25,20 @@ describe("unit-aware quantity validation", () => {
   it("checks purchase and sale request quantities by preserving decimal input", () => {
     const id = "00000000-0000-4000-8000-000000000001";
     const purchase = createPurchaseSchema.parse({
+      idempotencyKey: "00000000-0000-4000-8000-000000000002",
       supplierId: id,
-      items: [{ productId: id, quantity: "1.250", supplierRate: 2 }],
+      items: [
+        { productId: id, quantity: "1.250", supplierRate: 2, sellingRate: 3 },
+      ],
     });
     const sale = createSaleSchema.parse({
-      items: [{ productId: id, quantity: "1.250" }],
+      items: [
+        {
+          productId: id,
+          inventoryBatchId: "00000000-0000-4000-8000-000000000003",
+          quantity: "1.250",
+        },
+      ],
     });
     expect(purchase.items[0].quantity).toBe("1.250");
     expect(sale.items[0].quantity).toBe("1.250");
@@ -48,6 +57,8 @@ describe("unit-aware quantity validation", () => {
         productId: id,
         quantity: "2.5555",
         direction: "IN",
+        purchaseRate: 1,
+        sellingRate: 2,
         reason: "Count",
       }).quantity,
     ).toBe("2.5555");
@@ -60,6 +71,7 @@ describe("unit-aware quantity validation", () => {
       name: "Oil",
       brandId: id,
       unitId: id,
+      purchaseRate: 5,
       sellingPrice: 10,
       qty: "1.2345",
     });

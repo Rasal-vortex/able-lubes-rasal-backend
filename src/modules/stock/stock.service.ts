@@ -15,6 +15,73 @@ export async function createAdjustment(input: any, userId: string) {
       if (!product) throw new ApiError(404, "Active product not found");
       validateQuantity(input.quantity, product.unit);
       const quantity = dec(input.quantity);
+      let batchId: string;
+      if (input.direction === "IN") {
+        if (
+          !input.purchaseRate ||
+          !input.sellingRate ||
+          dec(input.purchaseRate).lte(0) ||
+          dec(input.sellingRate).lte(0)
+        )
+          throw new ApiError(
+            400,
+            "Stock increases require positive purchase and selling rates",
+          );
+        const batch = await tx.inventoryBatch.create({
+          data: {
+            productId: product.id,
+            label: null,
+            receivedQuantity: quantity,
+            remainingQuantity: quantity,
+            purchaseRate: dec(input.purchaseRate),
+            sellingRate: dec(input.sellingRate),
+            receivedAt: new Date(),
+            source: "ADJUSTMENT",
+            status: "ACTIVE",
+          },
+        });
+        batchId = batch.id;
+      } else {
+        const batch = input.inventoryBatchId
+          ? await tx.inventoryBatch.findUnique({
+              where: { id: input.inventoryBatchId },
+            })
+          : null;
+        if (
+          !batch ||
+          batch.productId !== product.id ||
+          batch.status !== "ACTIVE"
+        )
+          throw new ApiError(
+            409,
+            "Select an available stock batch for this product",
+          );
+        if (batch.remainingQuantity.lt(quantity))
+          throw new ApiError(
+            409,
+            "Adjustment would reduce the selected batch below zero",
+          );
+        const changedBatch = await tx.inventoryBatch.updateMany({
+          where: {
+            id: batch.id,
+            productId: product.id,
+            status: "ACTIVE",
+            remainingQuantity: { gte: quantity },
+          },
+          data: {
+            remainingQuantity: { decrement: quantity },
+            ...(batch.remainingQuantity.eq(quantity)
+              ? { status: "DEPLETED" }
+              : {}),
+          },
+        });
+        if (changedBatch.count !== 1)
+          throw new ApiError(
+            409,
+            "Selected stock batch changed; retry the adjustment",
+          );
+        batchId = batch.id;
+      }
       if (input.direction === "OUT" && product.currentStock.lt(quantity))
         throw new ApiError(409, "Adjustment would make stock negative");
       const next =
@@ -22,8 +89,19 @@ export async function createAdjustment(input: any, userId: string) {
           ? product.currentStock.add(quantity)
           : product.currentStock.sub(quantity);
       const changed = await tx.product.updateMany({
-        where: { id: product.id, currentStock: product.currentStock },
-        data: { currentStock: next },
+        where: {
+          id: product.id,
+          currentStock:
+            input.direction === "OUT"
+              ? { equals: product.currentStock, gte: quantity }
+              : product.currentStock,
+        },
+        data: {
+          currentStock:
+            input.direction === "IN"
+              ? { increment: quantity }
+              : { decrement: quantity },
+        },
       });
       if (changed.count !== 1)
         throw new ApiError(
@@ -33,6 +111,7 @@ export async function createAdjustment(input: any, userId: string) {
       const movement = await tx.stockMovement.create({
         data: {
           productId: product.id,
+          inventoryBatchId: batchId,
           type: "ADJUSTMENT",
           direction: input.direction,
           quantity,
@@ -43,6 +122,7 @@ export async function createAdjustment(input: any, userId: string) {
         },
         include: {
           product: { include: { brand: true, unit: true } },
+          inventoryBatch: true,
           createdBy: { select: { id: true, name: true, email: true } },
         },
       });
@@ -65,6 +145,7 @@ export async function listMovements(q: any) {
       include: {
         createdBy: { select: { id: true, name: true } },
         product: { include: { unit: true } },
+        inventoryBatch: true,
       },
       orderBy: { createdAt: "desc" },
       skip: (q.page - 1) * q.limit,
