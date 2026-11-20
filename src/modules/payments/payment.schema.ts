@@ -5,7 +5,7 @@ export const customerPaymentSchema = z
     saleId: z.uuid(),
     amount: z.coerce.number().finite().positive().max(9999999999.99),
     paymentDate: z.coerce.date().optional(),
-    method: z.enum(["CASH", "UPI", "COUPON"]),
+    method: z.enum(["CASH", "UPI", "COUPON", "STORE_CREDIT"]),
     notes: z.string().trim().max(1000).optional(),
   })
   .superRefine((payment, ctx) => {

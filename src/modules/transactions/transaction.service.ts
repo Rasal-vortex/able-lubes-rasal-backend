@@ -6,6 +6,13 @@ import { calculateInvoice, calculateLine } from "../../shared/money.js";
 import { validateQuantity } from "../../shared/quantity.js";
 
 const dec = (n: Prisma.Decimal | number | string) => new Prisma.Decimal(n);
+type SaleCancellationInput = {
+  reason: string;
+  refundMode: "PENDING" | "NOW";
+  actualReceivedConfirmed?: boolean;
+  refunds?: Array<{ amount: number | string; method: "CASH" | "UPI" | "BANK" | "OTHER"; reference?: string; originalPaymentId?: string }>;
+  actualPayments?: Array<{ amount: number | string; method: "CASH" | "UPI" | "BANK" | "OTHER" }>;
+};
 const invoiceDateKey = (date: Date) =>
   `${String(date.getUTCFullYear()).slice(-2)}${String(date.getUTCMonth() + 1).padStart(2, "0")}${String(date.getUTCDate()).padStart(2, "0")}`;
 
@@ -356,25 +363,94 @@ export async function createPurchase(input: any) {
   }
 }
 
-export async function cancelSale(id: string) {
-  return prisma.$transaction(
-    async (tx) => {
+async function cancelSaleWithinTransaction(
+  tx: Prisma.TransactionClient,
+  id: string,
+  input: SaleCancellationInput,
+  userId?: string,
+) {
       const sale = await tx.sale.findUnique({
         where: { id },
         include: {
           items: { include: { product: { include: { unit: true } }, inventoryBatch: true } },
           payments: true,
+          cancellation: { include: { refunds: true } },
+          returns: { select: { id: true } },
         },
       });
       if (!sale) throw new ApiError(404, "Sale not found");
-      if (sale.status === "CANCELLED") return sale;
+      if (sale.status === "CANCELLED") {
+        if (sale.cancellation) return sale;
+        throw new ApiError(409, "This sale was already cancelled and has no cancellation audit record");
+      }
       if (sale.status !== "POSTED")
         throw new ApiError(409, "Only posted sales can be cancelled");
-      if (sale.payments.length)
-        throw new ApiError(
-          409,
-          "Sales with recorded payments cannot be cancelled by this API",
-        );
+      if (sale.returns.length)
+        throw new ApiError(409, "A sale with recorded returns cannot be cancelled; return its remaining products through Sales Return");
+      const reason = input.reason.trim();
+      if (!reason) throw new ApiError(400, "Cancellation reason is required");
+      const recordedCollected = sale.payments
+        .filter((payment) => payment.method !== "COUPON")
+        .reduce((total, payment) => total.add(payment.amount), dec(0));
+      const actualPayments = input.actualPayments ?? sale.payments
+        .filter((payment) => payment.method !== "COUPON")
+        .map((payment) => ({ amount: payment.amount, method: payment.method as "CASH" | "UPI" }));
+      const actualByMethod = new Map<string, Prisma.Decimal>();
+      for (const payment of actualPayments) {
+        const amount = dec(payment.amount);
+        if (amount.lt(0)) throw new ApiError(400, "Actual payment amounts cannot be negative");
+        actualByMethod.set(payment.method, (actualByMethod.get(payment.method) ?? dec(0)).add(amount));
+      }
+      const actualTotal = [...actualByMethod.values()].reduce((total, amount) => total.add(amount), dec(0));
+      if (actualTotal.gt(recordedCollected) || actualTotal.gt(sale.totalAmount))
+        throw new ApiError(400, "Actual received amount cannot exceed the recorded collection or sale total");
+      const refunds = input.refunds ?? [];
+      if (input.refundMode === "PENDING" && refunds.length)
+        throw new ApiError(400, "Pending refund mode cannot record an actual refund");
+      if (input.refundMode === "NOW" && actualTotal.gt(0) && !refunds.length)
+        throw new ApiError(400, "Enter an actual refund amount or choose pending");
+      const refundTotal = refunds.reduce((total, refund) => total.add(dec(refund.amount)), dec(0));
+      if (refundTotal.gt(actualTotal)) throw new ApiError(400, "Refund total cannot exceed the amount actually received");
+      const originalPayments = new Map(sale.payments.map((payment) => [payment.id, payment]));
+      const retainedByPayment = new Map<string, Prisma.Decimal>();
+      const corrections: Array<{
+        cancellationId?: string;
+        originalPaymentId?: string;
+        type: "REVERSAL" | "ACTUAL_RECEIPT";
+        amount: Prisma.Decimal;
+        method: "CASH" | "UPI" | "BANK" | "OTHER";
+        reason: string;
+        createdById?: string;
+      }> = [];
+      for (const payment of sale.payments) {
+        if (payment.method === "COUPON") continue;
+        const method = payment.method as "CASH" | "UPI";
+        const remainingActual = actualByMethod.get(method) ?? dec(0);
+        const retained = Prisma.Decimal.min(payment.amount, remainingActual);
+        retainedByPayment.set(payment.id, retained);
+        actualByMethod.set(method, remainingActual.sub(retained));
+        const reversed = payment.amount.sub(retained);
+        if (reversed.gt(0)) corrections.push({
+          originalPaymentId: payment.id, type: "REVERSAL", amount: reversed,
+          method, reason, createdById: userId,
+        });
+      }
+      for (const [method, amount] of actualByMethod) {
+        if (amount.gt(0)) corrections.push({
+          type: "ACTUAL_RECEIPT", amount,
+          method: method as "CASH" | "UPI" | "BANK" | "OTHER", reason, createdById: userId,
+        });
+      }
+      const refundsByPayment = new Map<string, Prisma.Decimal>();
+      for (const refund of refunds) {
+        if (!refund.originalPaymentId) continue;
+        const originalPayment = originalPayments.get(refund.originalPaymentId);
+        if (!originalPayment) throw new ApiError(400, "Refund reference must belong to a payment on this sale");
+        const refundedForPayment = (refundsByPayment.get(originalPayment.id) ?? dec(0)).add(dec(refund.amount));
+        if (refundedForPayment.gt(retainedByPayment.get(originalPayment.id) ?? dec(0)))
+          throw new ApiError(400, "Refunds linked to a payment cannot exceed the verified amount received from it");
+        refundsByPayment.set(originalPayment.id, refundedForPayment);
+      }
       const quantitiesByBatch = new Map<string, Prisma.Decimal>();
       const batches = new Map<string, (typeof sale.items)[number]["inventoryBatch"]>();
       const quantitiesByProduct = new Map<string, Prisma.Decimal>();
@@ -403,6 +479,22 @@ export async function cancelSale(id: string) {
       });
       if (changedSale.count !== 1)
         throw new ApiError(409, "Sale status changed while cancellation was being processed");
+
+      const cancellation = await tx.saleCancellation.create({
+        data: {
+          saleId: sale.id,
+          reason,
+          cancelledById: userId,
+          collectedAmount: actualTotal,
+          actualReceivedAmount: actualTotal,
+          pendingAmount: actualTotal.sub(refundTotal),
+          paymentCorrections: corrections.length ? { create: corrections } : undefined,
+          refunds: refunds.length ? { create: refunds.map((refund) => ({
+            amount: dec(refund.amount), method: refund.method, reference: refund.reference?.trim() || null,
+            originalPaymentId: refund.originalPaymentId, createdById: userId,
+          })) } : undefined,
+        },
+      });
       for (const [batchId, quantity] of quantitiesByBatch) {
         const batch = batches.get(batchId)!;
         if (batch.remainingQuantity.add(quantity).gt(batch.receivedQuantity))
@@ -422,17 +514,105 @@ export async function cancelSale(id: string) {
           throw new ApiError(409, "Stock batch changed during sale cancellation; retry the request");
       }
       for (const [productId, quantity] of quantitiesByProduct) {
-        const changed = await tx.product.updateMany({
+        const product = await tx.product.update({
           where: { id: productId },
           data: { currentStock: { increment: quantity } },
+          select: { currentStock: true },
         });
-        if (changed.count !== 1)
-          throw new ApiError(409, "Product stock could not be restored for this sale");
+        const productBatchIds = [...quantitiesByBatch.entries()]
+          .filter(([batchId]) => batches.get(batchId)?.productId === productId);
+        for (const [batchId, restoredQuantity] of productBatchIds) {
+          await tx.stockMovement.create({ data: {
+            productId,
+            inventoryBatchId: batchId,
+            type: "ADJUSTMENT",
+            direction: "IN",
+            quantity: restoredQuantity,
+            stockAfter: product.currentStock,
+            reason: `Sale cancellation ${sale.invoiceNumber}`,
+            notes: reason,
+            createdById: userId,
+          } });
+        }
       }
-      return { ...sale, status: "CANCELLED" };
-    },
+      return { ...sale, status: "CANCELLED", cancellation: { ...cancellation, refunds } };
+}
+
+export async function cancelSale(
+  id: string,
+  input: SaleCancellationInput = { reason: "Sale cancelled", refundMode: "PENDING" },
+  userId?: string,
+) {
+  return prisma.$transaction(
+    (tx) => cancelSaleWithinTransaction(tx, id, input, userId),
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
+}
+
+export async function cancelCreditBillSale(
+  creditBillId: string,
+  input: SaleCancellationInput,
+  userId?: string,
+) {
+  if (!input.actualPayments?.length || input.actualReceivedConfirmed !== true)
+    throw new ApiError(400, "Confirm the amount actually received before cancelling this credit sale");
+  return prisma.$transaction(async (tx) => {
+    const bill = await tx.customerCreditBill.findUnique({ where: { id: creditBillId }, select: { id: true, saleId: true } });
+    if (!bill) throw new ApiError(404, "Credit bill not found");
+    if (!bill.saleId) throw new ApiError(409, "Only Billing-generated credit bills can be cancelled as sales");
+    return cancelSaleWithinTransaction(tx, bill.saleId, input, userId);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+}
+
+export async function settleCreditBillRefund(
+  creditBillId: string,
+  input: { amount: number | string; method: "CASH" | "UPI" | "BANK" | "OTHER"; reference?: string; idempotencyKey: string; originalPaymentId?: string },
+  userId?: string,
+) {
+  try { return await prisma.$transaction(async (tx) => {
+    const bill = await tx.customerCreditBill.findUnique({ where: { id: creditBillId }, select: { saleId: true } });
+    if (!bill?.saleId) throw new ApiError(404, "Cancelled sales credit bill not found");
+    const priorRefund = await tx.saleRefund.findUnique({ where: { idempotencyKey: input.idempotencyKey }, select: { id: true } });
+    if (priorRefund) return { id: bill.saleId, duplicate: true };
+    const cancellation = await tx.saleCancellation.findUnique({ where: { saleId: bill.saleId } });
+    if (!cancellation) throw new ApiError(409, "This sale has no pending refund record");
+    const amount = dec(input.amount);
+    if (amount.lte(0) || amount.gt(cancellation.pendingAmount))
+      throw new ApiError(400, "Refund settlement must be positive and cannot exceed the pending refund");
+    if (input.originalPaymentId) {
+      const originalPayment = await tx.customerPayment.findFirst({ where: { id: input.originalPaymentId, saleId: bill.saleId } });
+      if (!originalPayment) throw new ApiError(400, "Refund reference must belong to a payment on this sale");
+      const reversals = await tx.salePaymentCorrection.aggregate({
+        where: { cancellationId: cancellation.id, originalPaymentId: originalPayment.id, type: "REVERSAL" },
+        _sum: { amount: true },
+      });
+      const priorRefunds = await tx.saleRefund.aggregate({
+        where: { cancellationId: cancellation.id, originalPaymentId: originalPayment.id },
+        _sum: { amount: true },
+      });
+      const verifiedFromPayment = originalPayment.amount.sub(reversals._sum.amount ?? dec(0));
+      if ((priorRefunds._sum.amount ?? dec(0)).add(amount).gt(verifiedFromPayment))
+        throw new ApiError(400, "Refunds linked to a payment cannot exceed the verified amount received from it");
+    }
+    const updated = await tx.saleCancellation.updateMany({
+      where: { id: cancellation.id, pendingAmount: { gte: amount } },
+      data: { pendingAmount: { decrement: amount } },
+    });
+    if (updated.count !== 1) throw new ApiError(409, "Pending refund changed; refresh and try again");
+    await tx.saleRefund.create({ data: {
+      cancellationId: cancellation.id, amount, method: input.method,
+      reference: input.reference?.trim() || null, createdById: userId, idempotencyKey: input.idempotencyKey,
+      originalPaymentId: input.originalPaymentId,
+    } });
+    return { id: bill.saleId, pendingAmount: cancellation.pendingAmount.sub(amount).toFixed(2) };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }); }
+  catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const priorRefund = await prisma.saleRefund.findUnique({ where: { idempotencyKey: input.idempotencyKey }, select: { id: true } });
+      if (priorRefund) return { duplicate: true };
+    }
+    throw error;
+  }
 }
 
 export async function cancelPurchase(id: string) {
