@@ -8,5 +8,5 @@ export const createSale = async (data: any) =>
   saleSerializer(await postSale(data));
 export const updateSaleCoupon = async (id: string, data: any) =>
   saleSerializer(await patchSaleCoupon(id, data));
-export const cancelSale = async (id: string) =>
-  saleSerializer(await reverseSale(id));
+export const cancelSale = async (id: string, input: any, userId?: string) =>
+  saleSerializer(await reverseSale(id, input, userId));

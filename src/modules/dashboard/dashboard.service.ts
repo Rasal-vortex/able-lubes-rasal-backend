@@ -4,6 +4,7 @@ import { reportModel } from "../reports/report.model.js";
 import { dashboardModel } from "./dashboard.model.js";
 
 const zero = new Prisma.Decimal(0);
+const dec = (value: Prisma.Decimal | number | string) => new Prisma.Decimal(value);
 const money = (value: Prisma.Decimal | null | undefined) => (value ?? zero).toFixed(2);
 
 function localDateParts(date: Date) {
@@ -54,12 +55,19 @@ export async function dashboardSummary(month: string | undefined) {
   const range = monthBounds(month, now);
   const currentMonthRange = monthBounds(undefined, now);
 
-  const [sales, expenses, payments, monthSalesCount, chartSales, latestSales, customerRows, supplierRows] = await Promise.all([
+  const [sales, expenses, payments, verifiedCancellationPayments, salesReturns, monthSalesCount, chartSales, chartReturns, latestSales, customerRows, supplierRows] = await Promise.all([
     dashboardModel.todaySales(todayFrom, todayTo),
     dashboardModel.todayExpenses(todayFrom, todayTo),
     dashboardModel.todayPayments(todayFrom, todayTo),
+    typeof dashboardModel.todayVerifiedCancellationPayments === "function"
+      ? dashboardModel.todayVerifiedCancellationPayments(todayFrom, todayTo)
+      : Promise.resolve({ _sum: { actualReceivedAmount: zero } }),
+    typeof dashboardModel.todaySalesReturns === "function"
+      ? dashboardModel.todaySalesReturns(todayFrom, todayTo)
+      : Promise.resolve({ _sum: { amount: zero } }),
     dashboardModel.monthSales(currentMonthRange.from, currentMonthRange.to),
     dashboardModel.chartSales(range.from, range.to),
+    typeof dashboardModel.chartReturns === "function" ? dashboardModel.chartReturns(range.from, range.to) : Promise.resolve([]),
     dashboardModel.latestSales(),
     reportModel.customerSales(),
     reportModel.supplierPurchases(),
@@ -78,6 +86,16 @@ export async function dashboardSummary(month: string | undefined) {
     bucket.paidSales = bucket.paidSales.add(Prisma.Decimal.min(total, paid));
     bucket.creditSales = bucket.creditSales.add(Prisma.Decimal.max(zero, total.sub(paid)));
   }
+  for (const salesReturn of chartReturns as any[]) {
+    const key = dateKey(salesReturn.returnedAt);
+    const bucket = daily.get(key);
+    if (!bucket) continue;
+    const saleTotal = salesReturn.sale.totalAmount;
+    const paid = salesReturn.sale.payments.filter((payment: any) => payment.method !== "COUPON").reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), zero);
+    const paidShare = saleTotal.gt(0) ? Prisma.Decimal.min(dec(salesReturn.amount), paid.mul(salesReturn.amount).div(saleTotal)) : zero;
+    bucket.paidSales = Prisma.Decimal.max(zero, bucket.paidSales.sub(paidShare));
+    bucket.creditSales = Prisma.Decimal.max(zero, bucket.creditSales.sub(dec(salesReturn.amount).sub(paidShare)));
+  }
 
   const outstanding = (rows: any[], invoiceField: "totalAmount") => rows.reduce((sum, row) => {
     const paid = row.payments.reduce((n: Prisma.Decimal, payment: any) => n.add(payment.amount), zero);
@@ -92,9 +110,9 @@ export async function dashboardSummary(month: string | undefined) {
   return {
     today: {
       date: `${today.year}-${today.month}-${today.day}`,
-      salesTotal: money(sales._sum.totalAmount),
+      salesTotal: money((sales._sum.totalAmount ?? zero).sub(salesReturns._sum.amount ?? zero)),
       expensesTotal: money(expenses._sum.amount),
-      paymentsCollected: money(payments._sum.amount),
+      paymentsCollected: money((payments._sum.amount ?? zero).add(verifiedCancellationPayments._sum.actualReceivedAmount ?? zero)),
     },
     balances: { customerOutstanding: money(customerOutstanding), supplierPayable: money(supplierPayable) },
     currentMonth: { month: `${today.year}-${today.month}`, salesCount: monthSalesCount },
@@ -106,7 +124,7 @@ export async function dashboardSummary(month: string | undefined) {
       invoiceNumber: sale.invoiceNumber,
       customerName: sale.customer?.name ?? "Walk-in customer",
       paymentMethod: [...new Set(sale.payments.map((payment) => payment.method))].join(", ") || "CREDIT",
-      total: money(sale.totalAmount),
+      total: money(sale.totalAmount.sub(sale.returns.reduce((total: Prisma.Decimal, salesReturn: any) => total.add(salesReturn.amount), zero))),
       date: sale.billDate,
     })),
   };

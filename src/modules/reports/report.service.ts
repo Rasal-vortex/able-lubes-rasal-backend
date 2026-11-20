@@ -20,7 +20,7 @@ const bucketDate = (date: Date, monthly = false) => {
     : `${fields.year}-${fields.month}-${fields.day}`;
 };
 export async function salesReport(from: Date, to: Date) {
-  const rows = await reportModel.sales(from, to);
+  const [rows, returns] = await Promise.all([reportModel.sales(from, to), reportModel.salesReturns(from, to)]);
   const groups = new Map<string, any>();
   for (const row of rows) {
     const key = bucketDate(row.billDate);
@@ -37,10 +37,19 @@ export async function salesReport(from: Date, to: Date) {
     group.sales = group.sales.add(row.totalAmount);
     groups.set(key, group);
   }
+  for (const salesReturn of returns) {
+    const key = bucketDate(salesReturn.returnedAt);
+    const group = groups.get(key) ?? { date: key, invoices: 0, subtotal: decimal(0), discounts: decimal(0), sales: decimal(0) };
+    group.sales = group.sales.sub(salesReturn.amount);
+    groups.set(key, group);
+  }
+  const grossSales = decimal(sum(rows.map((row) => row.totalAmount)));
+  const returnAmount = decimal(sum(returns.map((row) => row.amount)));
   return {
     totals: {
       invoices: rows.length,
-      sales: sum(rows.map((r) => r.totalAmount)),
+      sales: grossSales.sub(returnAmount).toFixed(2),
+      returned: returnAmount.toFixed(2),
       discounts: sum(rows.map((r) => r.discountAmount)),
     },
     days: [...groups.values()].map((x) => ({
@@ -52,13 +61,22 @@ export async function salesReport(from: Date, to: Date) {
     invoices: rows.map((row) => ({
       id: row.id,
       invoiceNumber: row.invoiceNumber,
+      status: row.returnStatus === "FULLY_RETURNED" ? "Fully Returned" : row.returnStatus === "PARTIALLY_RETURNED" ? "Partially Returned" : "Posted",
       date: row.billDate,
       customer: row.customer?.name ?? "Walk-in customer",
-      total: row.totalAmount.toFixed(2),
+      total: Prisma.Decimal.max(decimal(0), row.totalAmount.sub(row.returns.reduce((sum, salesReturn) => sum.add(salesReturn.amount), decimal(0)))).toFixed(2),
       items: row.items.map((item) => ({
         productId: item.product.id,
         productName: item.product.name,
-        quantity: (item.displayQuantity ?? item.quantity).toString(),
+        quantity: (() => {
+          const returned = item.returns.reduce((sum, salesReturn) => sum.add(salesReturn.quantity), decimal(0));
+          const netQuantity = Prisma.Decimal.max(decimal(0), item.quantity.sub(returned));
+          return item.displayQuantity != null && !item.quantity.isZero() ? item.displayQuantity.mul(netQuantity).div(item.quantity).toString() : netQuantity.toString();
+        })(),
+        returnedQuantity: (() => {
+          const returned = item.returns.reduce((sum, salesReturn) => sum.add(salesReturn.quantity), decimal(0));
+          return item.displayQuantity != null && !item.quantity.isZero() ? item.displayQuantity.mul(returned).div(item.quantity).toString() : returned.toString();
+        })(),
         unitName: item.displayUnitNameSnapshot ?? item.unitNameSnapshot,
         unitSymbol: item.displayUnitSymbolSnapshot ?? item.unitSymbolSnapshot,
         unitSellingPrice: item.unitSellingPrice.toFixed(2),
@@ -72,6 +90,7 @@ export async function salesReport(from: Date, to: Date) {
         date: payment.paymentDate,
       })),
     })),
+    returns: returns.map((row) => ({ id: row.id, invoiceNumber: row.sale.invoiceNumber, customer: row.sale.customer?.name ?? "Walk-in customer", date: row.returnedAt, amount: row.amount.toFixed(2), reason: row.reason })),
   };
 }
 
@@ -96,7 +115,14 @@ export async function dailySales(date: string) {
   const [year, month, day] = date.split("-").map(Number);
   const nextDate = new Date(Date.UTC(year, month - 1, day + 1));
   const to = localDayStart(`${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, "0")}-${String(nextDate.getUTCDate()).padStart(2, "0")}`);
-  const payments = await reportModel.dailyPayments(from, to);
+  const [payments, refunds, cancellations, billedSales, salesReturns, returnRefunds] = await Promise.all([
+    reportModel.dailyPayments(from, to),
+    reportModel.dailyRefunds(from, to),
+    reportModel.dailyPaymentCorrections(from, to),
+    reportModel.dailyInvoices(from, to),
+    reportModel.dailySalesReturns(from, to),
+    reportModel.dailyReturnRefunds(from, to),
+  ]);
   const bySale = new Map<string, any>();
   const byMethod = new Map<string, Prisma.Decimal>();
   let collected = decimal(0);
@@ -104,17 +130,22 @@ export async function dailySales(date: string) {
     const sale = payment.sale;
     if (!sale) continue;
     const bill = bySale.get(sale.id) ?? {
+      id: sale.id,
+      saleId: sale.id,
       invoiceNumber: sale.invoiceNumber,
       billDate: sale.billDate,
       discountAmount: sale.discountAmount.toFixed(2),
       totalAmount: sale.totalAmount.toFixed(2),
+      returnStatus: sale.returnStatus,
       customer: sale.customer?.name ?? "Walk-in customer",
       products: sale.items.map((item) => ({
+        saleItemId: item.id,
         productId: item.product.id, productName: item.product.name,
         quantity: (item.displayQuantity ?? item.quantity).toString(), unitName: item.displayUnitNameSnapshot ?? item.unitNameSnapshot,
         unitSymbol: item.displayUnitSymbolSnapshot ?? item.unitSymbolSnapshot,
         unitSellingPrice: item.unitSellingPrice.toFixed(2),
         discountAmount: item.discountAmount.toFixed(2), lineTotal: item.lineTotal.toFixed(2),
+        returnedQuantity: item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0)).toString(),
       })),
       payments: [],
     };
@@ -123,20 +154,153 @@ export async function dailySales(date: string) {
     collected = collected.add(payment.amount);
     byMethod.set(payment.method, (byMethod.get(payment.method) ?? decimal(0)).add(payment.amount));
   }
+  for (const sale of billedSales) {
+    const lineRevenueTotal = sale.items.reduce((sum, item) => sum.add(item.lineTotal), decimal(0));
+    bySale.set(sale.id, {
+      id: sale.id,
+      saleId: sale.id,
+      invoiceNumber: sale.invoiceNumber,
+      billDate: sale.billDate,
+      discountAmount: sale.discountAmount.toFixed(2),
+      totalAmount: sale.totalAmount.toFixed(2),
+      netSalesAmount: Prisma.Decimal.max(decimal(0), sale.totalAmount.sub(sale.returns.reduce((sum, salesReturn) => sum.add(salesReturn.amount), decimal(0)))).toFixed(2),
+      returnStatus: sale.returnStatus,
+      returns: sale.returns.map((salesReturn) => ({ amount: salesReturn.amount.toFixed(2), returnedAt: salesReturn.returnedAt })),
+      customer: sale.customer?.name ?? "Walk-in customer",
+      products: sale.items.map((item) => ({
+        saleItemId: item.id,
+        productId: item.productId,
+        productName: item.product.name,
+        quantity: item.quantity.toString(),
+        displayQuantity: item.displayQuantity?.toString() ?? null,
+        displayUnitName: item.displayUnitNameSnapshot,
+        displayUnitSymbol: item.displayUnitSymbolSnapshot,
+        unitName: item.unitNameSnapshot,
+        unitSymbol: item.unitSymbolSnapshot,
+        unitSellingPrice: item.unitSellingPrice.toFixed(2),
+        discountAmount: item.discountAmount.toFixed(2),
+        lineTotal: item.lineTotal.toFixed(2),
+        returnedQuantity: item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0)).toString(),
+        returnedAmount: item.returns.reduce((sum, row) => sum.add(row.amount), decimal(0)).toFixed(2),
+      })),
+      payments: sale.payments.map((payment) => ({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes })),
+      lineRevenueTotal: lineRevenueTotal.toFixed(2),
+    });
+  }
+  const paymentCorrections: Array<Record<string, unknown>> = [];
+  const creditCancellations: Array<Record<string, unknown>> = [];
+  for (const cancellation of cancellations) {
+    if (!cancellation.sale) continue;
+    const reversalsByPayment = new Map<string, Prisma.Decimal>();
+    const verifiedByMethod = new Map<string, Prisma.Decimal>();
+    for (const correction of cancellation.paymentCorrections) {
+      paymentCorrections.push({
+        id: correction.id,
+        invoiceNumber: cancellation.sale.invoiceNumber,
+        customer: cancellation.sale.customer?.name ?? "Walk-in customer",
+        type: correction.type,
+        method: correction.method,
+        amount: correction.amount.toFixed(2),
+        reason: correction.reason,
+        date: correction.createdAt,
+      });
+      if (correction.type === "REVERSAL" && correction.originalPaymentId) {
+        reversalsByPayment.set(
+          correction.originalPaymentId,
+          (reversalsByPayment.get(correction.originalPaymentId) ?? decimal(0)).add(correction.amount),
+        );
+      } else if (correction.type === "ACTUAL_RECEIPT") {
+        verifiedByMethod.set(correction.method, (verifiedByMethod.get(correction.method) ?? decimal(0)).add(correction.amount));
+      }
+    }
+    for (const payment of cancellation.sale.payments) {
+      if (payment.method === "COUPON") continue;
+      const verifiedAmount = Prisma.Decimal.max(
+        decimal(0),
+        payment.amount.sub(reversalsByPayment.get(payment.id) ?? decimal(0)),
+      );
+      if (verifiedAmount.gt(0))
+        verifiedByMethod.set(payment.method, (verifiedByMethod.get(payment.method) ?? decimal(0)).add(verifiedAmount));
+    }
+    for (const [method, amount] of verifiedByMethod) {
+      collected = collected.add(amount);
+      byMethod.set(method, (byMethod.get(method) ?? decimal(0)).add(amount));
+    }
+    creditCancellations.push({
+      id: cancellation.id,
+      invoiceNumber: cancellation.sale.invoiceNumber,
+      customer: cancellation.sale.customer?.name ?? "Walk-in customer",
+      reason: cancellation.reason,
+      date: cancellation.cancelledAt,
+      amount: cancellation.sale.totalAmount.toFixed(2),
+      actualReceivedAmount: cancellation.actualReceivedAmount.toFixed(2),
+      pendingRefundAmount: cancellation.pendingAmount.toFixed(2),
+      cancelledBy: cancellation.cancelledBy?.name ?? null,
+      recordedPayments: cancellation.sale.payments.map((payment) => ({
+        id: payment.id, method: payment.method, amount: payment.amount.toFixed(2),
+      })),
+      actualPayments: [...verifiedByMethod.entries()].map(([method, amount]) => ({
+        method, amount: amount.toFixed(2),
+      })),
+      paymentCorrections: cancellation.paymentCorrections.map((correction) => ({
+        id: correction.id, type: correction.type, amount: correction.amount.toFixed(2),
+        method: correction.method, reason: correction.reason, date: correction.createdAt,
+        originalPaymentId: correction.originalPaymentId,
+      })),
+      refunds: cancellation.refunds.map((refund) => ({
+        id: refund.id, amount: refund.amount.toFixed(2), method: refund.method,
+        reference: refund.reference, date: refund.createdAt,
+      })),
+    });
+  }
   return {
     date,
     totals: {
       collected: collected.toFixed(2),
+      refunded: sum([...refunds.map((refund) => refund.amount), ...returnRefunds.map((refund) => refund.amount)]),
       byMethod: [...byMethod.entries()].map(([method, amount]) => ({ method, amount: amount.toFixed(2) })),
     },
     invoices: [...bySale.values()],
+    paymentCorrections,
+    creditCancellations,
+    refunds: [
+      ...refunds.map((refund) => ({
+      id: refund.id,
+      invoiceNumber: refund.cancellation.sale.invoiceNumber,
+      customer: refund.cancellation.sale.customer?.name ?? "Walk-in customer",
+      amount: refund.amount.toFixed(2),
+      method: refund.method,
+      reference: refund.reference,
+      originalPaymentId: refund.originalPaymentId,
+      date: refund.createdAt,
+      })),
+      ...returnRefunds.map((refund) => ({
+        id: refund.id,
+        invoiceNumber: refund.salesReturn.sale.invoiceNumber,
+        customer: refund.salesReturn.sale.customer?.name ?? "Walk-in customer",
+        amount: refund.amount.toFixed(2), method: refund.method, reference: refund.reference,
+        date: refund.createdAt,
+      })),
+    ],
+    salesReturns: salesReturns.map((salesReturn) => ({
+      id: salesReturn.id,
+      invoiceNumber: salesReturn.sale.invoiceNumber,
+      customer: salesReturn.sale.customer?.name ?? "Walk-in customer",
+      reason: salesReturn.reason,
+      date: salesReturn.returnedAt,
+      amount: salesReturn.amount.toFixed(2),
+      creditAppliedAmount: salesReturn.creditAppliedAmount.toFixed(2),
+      settlementType: salesReturn.settlementType,
+      returnedBy: salesReturn.returnedBy?.name ?? null,
+      settlements: salesReturn.settlements.map((row) => ({ id: row.id, type: row.type, amount: row.amount.toFixed(2), method: row.method, reference: row.reference, date: row.createdAt })),
+    })),
   };
 }
 
 export async function profitReport(from: Date, to: Date) {
-  const rows = await reportModel.sales(from, to);
+  const [rows, returns] = await Promise.all([reportModel.sales(from, to), reportModel.salesReturns(from, to)]);
   const expenses = await reportModel.expenses(from, to);
-  const netSales = decimal(sum(rows.map((row) => row.totalAmount)));
+  const netSales = decimal(sum(rows.map((row) => row.totalAmount))).sub(sum(returns.map((row) => row.amount)));
   let totalProfit = decimal(0);
   const invoices = rows.map((sale) => {
     const lineRevenueTotal = sale.items.reduce((value, item) => value.add(item.lineTotal), decimal(0));
@@ -150,22 +314,28 @@ export async function profitReport(from: Date, to: Date) {
       const saleAmount = lineRevenueTotal.gt(0)
         ? sale.totalAmount.mul(item.lineTotal).div(lineRevenueTotal)
         : item.lineTotal;
-      const profit = saleAmount.sub(cost);
-      totalProfit = totalProfit.add(profit);
+      const itemReturns = item.returns.reduce((total, salesReturn) => total.add(salesReturn.amount), decimal(0));
+      const itemReturnedCost = item.returns.reduce((total, salesReturn) => total.add(salesReturn.costAmount), decimal(0));
+      const netItemRevenue = saleAmount.sub(itemReturns);
+      const netItemCost = cost.sub(itemReturnedCost);
+      const profit = netItemRevenue.sub(netItemCost);
+      totalProfit = totalProfit.add(saleAmount.sub(cost));
       return {
         productId: item.product.id,
         productName: item.product.name,
-        quantity: item.quantity.toString(),
-        saleAmount: saleAmount.toFixed(2),
+        quantity: Prisma.Decimal.max(decimal(0), item.quantity.sub(item.returns.reduce((total, salesReturn) => total.add(salesReturn.quantity), decimal(0)))).toString(),
+        saleAmount: Prisma.Decimal.max(decimal(0), netItemRevenue).toFixed(2),
         purchaseRate: costRate.toFixed(2),
         costBasis,
-        cost: cost.toFixed(2),
+        cost: Prisma.Decimal.max(decimal(0), netItemCost).toFixed(2),
         profit: profit.toFixed(2),
       };
     });
     return { invoiceNumber: sale.invoiceNumber, date: sale.billDate, items };
   });
   const totalExpenses = decimal(sum(expenses.map((row) => row.amount)));
+  const returnedProfit = returns.reduce((total, row) => total.add(row.amount).sub(row.items.reduce((cost, item) => cost.add(item.costAmount), decimal(0))), decimal(0));
+  totalProfit = totalProfit.sub(returnedProfit);
   return {
     totals: {
       netSales: netSales.toFixed(2),
@@ -251,7 +421,7 @@ export async function customerOutstanding() {
       invoiced: decimal(0),
       paid: decimal(0),
     };
-    x.invoiced = x.invoiced.add(row.totalAmount);
+    x.invoiced = x.invoiced.add(row.totalAmount.sub(row.returns.reduce((total, salesReturn) => total.add(salesReturn.creditAppliedAmount), decimal(0))));
     x.paid = x.paid.add(sum(row.payments.map((p) => p.amount)));
     balances.set(customer.id, x);
   }
@@ -286,8 +456,9 @@ export async function supplierOutstanding() {
   }));
 }
 export async function monthlySummary(from: Date, to: Date) {
-  const [sales, purchases, expenses] = await Promise.all([
+  const [sales, salesReturns, purchases, expenses] = await Promise.all([
     reportModel.sales(from, to),
+    reportModel.salesReturns(from, to),
     reportModel.purchases(from, to),
     reportModel.expenses(from, to),
   ]);
@@ -304,6 +475,7 @@ export async function monthlySummary(from: Date, to: Date) {
     groups.set(bucket, x);
   };
   sales.forEach((x) => apply(x.billDate, "sales", x.totalAmount));
+  salesReturns.forEach((x) => apply(x.returnedAt, "sales", x.amount.neg()));
   purchases.forEach((x) => apply(x.purchaseDate, "purchases", x.totalAmount));
   expenses.forEach((x) => apply(x.expenseDate, "expenses", x.amount));
   return [...groups.values()].map((x) => ({

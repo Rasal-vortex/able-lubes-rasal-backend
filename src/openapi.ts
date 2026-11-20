@@ -263,9 +263,10 @@ export const openApiDocument = {
     },
     "/sales/{id}/cancel": {
       post: {
-        summary: "Cancel an unpaid sale and restore stock once",
+        summary: "Cancel a sale, preserve receipts, restore original batches, and track refunds",
+        description: "Requires a cancellation reason and explicit refundMode. Refund entries represent actual money returned now; any remaining collected amount is stored as a pending refund payable. Original sale and payment records are preserved.",
         security: [{ bearerAuth: [] }],
-        responses: { "200": { description: "Cancelled sale" } },
+        responses: { "200": { description: "Cancelled sale with cancellation and refund audit" }, "409": { description: "Sale is not posted or stock cannot be safely restored" } },
       },
     },
     "/purchases/{id}/cancel": {
@@ -298,7 +299,7 @@ export const openApiDocument = {
     "/credit-bills": {
       get: {
         summary:
-          "List persisted manual and sales-linked customer credit bills with current balances",
+          "List persisted manual and Billing-generated customer credit bills, including cancelled sale and refund history",
         security: [{ bearerAuth: [] }],
         responses: {
           "200": {
@@ -313,12 +314,40 @@ export const openApiDocument = {
         responses: { "201": { description: "Created customer credit bill" } },
       },
     },
+    "/credit-bills/{id}": {
+      delete: {
+        summary: "Delete an unpaid manual customer credit bill",
+        description: "Sales-linked credit bills and bills with payment history cannot be deleted.",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Deleted customer credit bill" },
+          "404": { description: "Credit bill not found" },
+          "409": { description: "Bill is linked to a sale or has payment history" },
+        },
+      },
+    },
     "/credit-bills/{id}/payments": {
       post: {
         summary:
           "Record a Cash or UPI payment against a manual customer credit bill",
         security: [{ bearerAuth: [] }],
         responses: { "200": { description: "Updated credit bill balance" } },
+      },
+    },
+    "/credit-bills/{id}/cancel": {
+      post: {
+        summary: "Safely cancel a Billing-generated sale and its linked credit bill",
+        description: "Requires a reason, an explicit staff confirmation of the actual amount received, and refundMode. Recorded receipts are never treated as proof of payment. When actual received is zero, no refund or payable is created. When money was received, refunds record amounts actually paid back now and any remainder stays as a pending refund payable. Keeps original sale, bill, and payment history; reverses inaccurate receipts with linked corrections; restores exact inventory batches and records stock movements in the same transaction.",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Cancelled credit sale and audit details" }, "409": { description: "Bill is not linked to a safely cancellable posted sale" } },
+      },
+    },
+    "/credit-bills/{id}/refunds": {
+      post: {
+        summary: "Settle part or all of a pending refund payable",
+        description: "Records a separate refund outflow with method, optional reference, and required UUID idempotencyKey. Settlement cannot exceed the current pending balance; duplicate submissions with the same key do not create another refund.",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Updated refund payable and refund history" }, "409": { description: "No pending refund or concurrent balance change" } },
       },
     },
     "/expenses": {
@@ -427,7 +456,7 @@ export const openApiDocument = {
         responses: {
           "200": {
             description:
-              "Only payments received on the requested date, grouped by invoice and payment method",
+              "Active payments received on the requested date, plus separate actual refund outflows; pending refund payables are not reported as outflows",
           },
         },
       },

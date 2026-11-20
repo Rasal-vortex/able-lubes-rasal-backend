@@ -21,6 +21,12 @@ enum SaleStatus {
   CANCELLED
 }
 
+enum SalesReturnStatus {
+  NONE
+  PARTIALLY_RETURNED
+  FULLY_RETURNED
+}
+
 enum PaymentStatus {
   UNPAID
   PARTIALLY_PAID
@@ -31,6 +37,31 @@ enum PaymentMethod {
   CASH
   UPI
   COUPON
+  STORE_CREDIT
+}
+
+enum SalesReturnSettlementType {
+  BALANCE_OFFSET
+  REFUND
+  CUSTOMER_CREDIT
+  PENDING
+}
+
+enum CustomerStoreCreditType {
+  CREDIT
+  DEBIT
+}
+
+enum RefundMethod {
+  CASH
+  UPI
+  BANK
+  OTHER
+}
+
+enum SalePaymentCorrectionType {
+  REVERSAL
+  ACTUAL_RECEIPT
 }
 
 enum PurchaseStatus {
@@ -42,6 +73,7 @@ enum PurchaseStatus {
 enum StockMovementType {
   OPENING_STOCK
   ADJUSTMENT
+  SALE_RETURN
 }
 
 enum StockDirection {
@@ -76,6 +108,11 @@ model User {
   createdAt       DateTime         @default(now()) @map("created_at")
   updatedAt       DateTime         @updatedAt @map("updated_at")
   stockMovements  StockMovement[]
+  saleCancellations SaleCancellation[]
+  saleRefunds     SaleRefund[]
+  paymentCorrections SalePaymentCorrection[] @relation("SalePaymentCorrectionCreatedBy")
+  salesReturns SalesReturn[]
+  salesReturnSettlements SalesReturnSettlement[]
   refreshSessions RefreshSession[]
 
   @@map("users")
@@ -177,6 +214,7 @@ model Customer {
   sales       Sale[]
   payments    CustomerPayment[]
   creditBills CustomerCreditBill[]
+  storeCreditTransactions CustomerStoreCreditTransaction[]
 
   @@index([name])
   @@index([phone])
@@ -211,6 +249,7 @@ model Sale {
   totalAmount    Decimal       @map("total_amount") @db.Decimal(12, 2)
   status         SaleStatus    @default(DRAFT)
   paymentStatus  PaymentStatus @default(UNPAID) @map("payment_status")
+  returnStatus   SalesReturnStatus @default(NONE) @map("return_status")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
@@ -218,6 +257,9 @@ model Sale {
   payments   CustomerPayment[]
   coupon     Coupon?
   creditBill CustomerCreditBill?
+  cancellation SaleCancellation?
+  returns      SalesReturn[]
+  storeCreditTransactions CustomerStoreCreditTransaction[]
 
   @@index([customerId, billDate])
   @@index([status, billDate])
@@ -266,6 +308,7 @@ model SaleItem {
   unitNameSnapshot           String   @map("unit_name_snapshot")
   unitSymbolSnapshot         String?  @map("unit_symbol_snapshot")
   unitAllowsDecimalsSnapshot Boolean  @map("unit_allows_decimals_snapshot")
+  returns                    SalesReturnItem[]
 
   @@index([saleId])
   @@index([productId])
@@ -279,6 +322,9 @@ model CustomerPayment {
   customer    Customer?     @relation(fields: [customerId], references: [id], onDelete: Restrict)
   saleId      String?       @map("sale_id") @db.Uuid
   sale        Sale?         @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  refunds     SaleRefund[]
+  corrections SalePaymentCorrection[] @relation("OriginalPaymentCorrection")
+  storeCreditTransaction CustomerStoreCreditTransaction?
   amount      Decimal       @db.Decimal(12, 2)
   paymentDate DateTime      @map("payment_date") @db.Timestamptz(3)
   method      PaymentMethod
@@ -288,6 +334,137 @@ model CustomerPayment {
   @@index([customerId, paymentDate])
   @@index([saleId])
   @@map("customer_payments")
+}
+
+model SaleCancellation {
+  id              String      @id @default(uuid()) @db.Uuid
+  saleId          String      @unique @map("sale_id") @db.Uuid
+  sale            Sale        @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  reason          String
+  cancelledAt     DateTime    @default(now()) @map("cancelled_at") @db.Timestamptz(3)
+  cancelledById   String?     @map("cancelled_by_id") @db.Uuid
+  cancelledBy     User?       @relation(fields: [cancelledById], references: [id], onDelete: Restrict)
+  collectedAmount Decimal     @map("collected_amount") @db.Decimal(12, 2)
+  actualReceivedAmount Decimal @default(0) @map("actual_received_amount") @db.Decimal(12, 2)
+  pendingAmount   Decimal     @default(0) @map("pending_amount") @db.Decimal(12, 2)
+  refunds         SaleRefund[]
+  paymentCorrections SalePaymentCorrection[]
+
+  @@index([cancelledAt])
+  @@index([cancelledById])
+  @@map("sale_cancellations")
+}
+
+model SalePaymentCorrection {
+  id               String                    @id @default(uuid()) @db.Uuid
+  cancellationId   String                    @map("cancellation_id") @db.Uuid
+  cancellation     SaleCancellation          @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  originalPaymentId String?                  @map("original_payment_id") @db.Uuid
+  originalPayment  CustomerPayment?          @relation("OriginalPaymentCorrection", fields: [originalPaymentId], references: [id], onDelete: Restrict)
+  type             SalePaymentCorrectionType
+  amount           Decimal                   @db.Decimal(12, 2)
+  method           RefundMethod
+  reason           String
+  createdById      String?                   @map("created_by_id") @db.Uuid
+  createdBy        User?                     @relation("SalePaymentCorrectionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt        DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([cancellationId, createdAt])
+  @@index([originalPaymentId])
+  @@index([createdById])
+  @@map("sale_payment_corrections")
+}
+
+model SaleRefund {
+  id             String           @id @default(uuid()) @db.Uuid
+  idempotencyKey String?          @unique @map("idempotency_key") @db.Uuid
+  cancellationId String           @map("cancellation_id") @db.Uuid
+  cancellation   SaleCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  originalPaymentId String?       @map("original_payment_id") @db.Uuid
+  originalPayment   CustomerPayment? @relation(fields: [originalPaymentId], references: [id], onDelete: Restrict)
+  amount         Decimal          @db.Decimal(12, 2)
+  method         RefundMethod
+  reference      String?
+  createdById    String?          @map("created_by_id") @db.Uuid
+  createdBy      User?            @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([cancellationId, createdAt])
+  @@index([createdById])
+  @@map("sale_refunds")
+}
+
+model SalesReturn {
+  id             String                      @id @default(uuid()) @db.Uuid
+  idempotencyKey String                      @unique @map("idempotency_key") @db.Uuid
+  saleId         String                      @map("sale_id") @db.Uuid
+  sale           Sale                        @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  reason         String
+  settlementType SalesReturnSettlementType   @map("settlement_type")
+  returnedAt     DateTime                    @default(now()) @map("returned_at") @db.Timestamptz(3)
+  returnedById   String?                     @map("returned_by_id") @db.Uuid
+  returnedBy     User?                       @relation(fields: [returnedById], references: [id], onDelete: Restrict)
+  amount         Decimal                     @db.Decimal(12, 2)
+  creditAppliedAmount Decimal @default(0) @map("credit_applied_amount") @db.Decimal(12, 2)
+  items          SalesReturnItem[]
+  settlements    SalesReturnSettlement[]
+  storeCreditTransaction CustomerStoreCreditTransaction?
+
+  @@index([saleId, returnedAt])
+  @@index([returnedById])
+  @@map("sales_returns")
+}
+
+model SalesReturnItem {
+  id            String      @id @default(uuid()) @db.Uuid
+  salesReturnId String      @map("sales_return_id") @db.Uuid
+  salesReturn   SalesReturn @relation(fields: [salesReturnId], references: [id], onDelete: Restrict)
+  saleItemId    String      @map("sale_item_id") @db.Uuid
+  saleItem      SaleItem    @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
+  quantity      Decimal     @db.Decimal(12, 3)
+  amount        Decimal     @db.Decimal(12, 2)
+  costAmount    Decimal     @map("cost_amount") @db.Decimal(12, 2)
+
+  @@index([salesReturnId])
+  @@index([saleItemId])
+  @@map("sales_return_items")
+}
+
+model SalesReturnSettlement {
+  id             String                    @id @default(uuid()) @db.Uuid
+  idempotencyKey String?                   @unique @map("idempotency_key") @db.Uuid
+  salesReturnId  String                    @map("sales_return_id") @db.Uuid
+  salesReturn    SalesReturn               @relation(fields: [salesReturnId], references: [id], onDelete: Restrict)
+  type           SalesReturnSettlementType
+  amount         Decimal                   @db.Decimal(12, 2)
+  method         RefundMethod?
+  reference      String?
+  createdById    String?                   @map("created_by_id") @db.Uuid
+  createdBy      User?                     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([salesReturnId, createdAt])
+  @@index([createdById])
+  @@map("sales_return_settlements")
+}
+
+model CustomerStoreCreditTransaction {
+  id            String                  @id @default(uuid()) @db.Uuid
+  customerId    String                  @map("customer_id") @db.Uuid
+  customer      Customer                @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  type          CustomerStoreCreditType
+  amount        Decimal                 @db.Decimal(12, 2)
+  salesReturnId String?                 @unique @map("sales_return_id") @db.Uuid
+  salesReturn   SalesReturn?            @relation(fields: [salesReturnId], references: [id], onDelete: Restrict)
+  saleId        String?                 @map("sale_id") @db.Uuid
+  sale          Sale?                   @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  paymentId     String?                 @unique @map("payment_id") @db.Uuid
+  payment       CustomerPayment?        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  createdAt     DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([customerId, createdAt])
+  @@index([saleId])
+  @@map("customer_store_credit_transactions")
 }
 
 model CustomerCreditBill {

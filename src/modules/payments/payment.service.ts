@@ -28,6 +28,16 @@ export async function recordCustomerPayment(input: any) {
           "Payment exceeds the invoice outstanding amount",
         );
       let paymentNotes = input.notes;
+      if (input.method === "STORE_CREDIT") {
+        if (!sale.customerId) throw new ApiError(400, "Store credit requires a registered customer");
+        const balances = await tx.customerStoreCreditTransaction.groupBy({
+          by: ["type"],
+          where: { customerId: sale.customerId },
+          _sum: { amount: true },
+        });
+        const available = balances.reduce((balance, row) => balance.add(row.type === "CREDIT" ? row._sum.amount ?? amount(0) : (row._sum.amount ?? amount(0)).neg()), amount(0));
+        if (paymentAmount.gt(available)) throw new ApiError(400, "Store credit exceeds the customer's available balance");
+      }
       if (input.method === "COUPON") {
         const couponCode = /^Coupon code: (.+)$/.exec(input.notes ?? "")?.[1];
         if (couponCode) {
@@ -61,6 +71,11 @@ export async function recordCustomerPayment(input: any) {
         },
         tx,
       );
+      if (input.method === "STORE_CREDIT") {
+        await tx.customerStoreCreditTransaction.create({
+          data: { customerId: sale.customerId!, type: "DEBIT", amount: paymentAmount, saleId: sale.id, paymentId: payment.id },
+        });
+      }
       await paymentModel.setSalePaymentStatus(
         sale.id,
         paymentAmount.eq(outstanding) ? "PAID" : "PARTIALLY_PAID",

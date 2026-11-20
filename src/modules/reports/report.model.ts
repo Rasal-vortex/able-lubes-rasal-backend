@@ -10,6 +10,7 @@ export const reportModel = {
         subtotal: true,
         discountAmount: true,
         totalAmount: true,
+        returnStatus: true,
         customer: { select: { id: true, name: true } },
         items: {
           select: {
@@ -19,12 +20,23 @@ export const reportModel = {
             inventoryBatch: { select: { purchaseRate: true } },
             unitNameSnapshot: true, unitSymbolSnapshot: true,
             product: { select: { id: true, name: true, purchaseRate: true } },
+            returns: { select: { quantity: true, amount: true, costAmount: true } },
           },
         },
         payments: { select: { id: true, amount: true, method: true, paymentDate: true } },
+        returns: { select: { amount: true, returnedAt: true, items: { select: { saleItemId: true, quantity: true, amount: true, costAmount: true } } } },
       },
       orderBy: { billDate: "asc" },
     }),
+  salesReturns: (from: Date, to: Date) => prisma.salesReturn.findMany({
+    where: { returnedAt: { gte: from, lte: to } },
+    select: {
+      id: true, saleId: true, amount: true, returnedAt: true, reason: true,
+      sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } },
+      items: { select: { saleItemId: true, quantity: true, amount: true, costAmount: true } },
+    },
+    orderBy: { returnedAt: "asc" },
+  }),
   purchases: (from: Date, to: Date) =>
     prisma.purchase.findMany({
       where: { status: "POSTED", purchaseDate: { gte: from, lte: to } },
@@ -42,22 +54,82 @@ export const reportModel = {
       select: { expenseDate: true, amount: true },
     }),
   dailyPayments: (from: Date, to: Date) => prisma.customerPayment.findMany({
-    where: { paymentDate: { gte: from, lt: to }, sale: { status: "POSTED" } },
+    where: { paymentDate: { gte: from, lt: to }, method: { not: "COUPON" }, sale: { status: "POSTED" } },
     select: {
       id: true, amount: true, method: true, paymentDate: true, notes: true,
       sale: {
         select: {
           id: true, invoiceNumber: true, billDate: true, totalAmount: true, discountAmount: true,
+          returnStatus: true,
           customer: { select: { id: true, name: true } },
           items: { select: {
             id: true, quantity: true, displayQuantity: true, displayUnitNameSnapshot: true, displayUnitSymbolSnapshot: true, unitSellingPrice: true, discountAmount: true,
             lineTotal: true, unitNameSnapshot: true, unitSymbolSnapshot: true,
             product: { select: { id: true, name: true } },
+            returns: { select: { quantity: true, amount: true } },
           } },
         },
       },
     },
     orderBy: { paymentDate: "asc" },
+  }),
+  dailyRefunds: (from: Date, to: Date) => prisma.saleRefund.findMany({
+    where: { createdAt: { gte: from, lt: to } },
+    select: {
+      id: true, amount: true, method: true, reference: true, originalPaymentId: true, createdAt: true,
+      cancellation: { select: { sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } } } },
+    },
+    orderBy: { createdAt: "asc" },
+  }),
+  dailyInvoices: (from: Date, to: Date) => prisma.sale.findMany({
+    where: { status: "POSTED", billDate: { gte: from, lt: to } },
+    select: {
+      id: true, invoiceNumber: true, billDate: true, totalAmount: true, discountAmount: true, returnStatus: true,
+      customer: { select: { id: true, name: true } },
+      items: { select: {
+        id: true, productId: true, quantity: true, displayQuantity: true, displayUnitNameSnapshot: true, displayUnitSymbolSnapshot: true,
+        unitSellingPrice: true, discountAmount: true, lineTotal: true, unitNameSnapshot: true, unitSymbolSnapshot: true,
+        product: { select: { id: true, name: true } },
+        returns: { select: { quantity: true, amount: true } },
+      } },
+      payments: { select: { id: true, amount: true, method: true, paymentDate: true, notes: true } },
+      returns: { select: { amount: true, returnedAt: true, items: { select: { saleItemId: true, quantity: true, amount: true, costAmount: true } } } },
+    },
+    orderBy: { billDate: "asc" },
+  }),
+  dailySalesReturns: (from: Date, to: Date) => prisma.salesReturn.findMany({
+    where: { returnedAt: { gte: from, lt: to } },
+    select: {
+      id: true, reason: true, returnedAt: true, amount: true, creditAppliedAmount: true, settlementType: true,
+      returnedBy: { select: { name: true } },
+      sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } },
+      settlements: { select: { id: true, type: true, amount: true, method: true, reference: true, createdAt: true } },
+    },
+    orderBy: { returnedAt: "asc" },
+  }),
+  dailyReturnRefunds: (from: Date, to: Date) => prisma.salesReturnSettlement.findMany({
+    where: { type: "REFUND", createdAt: { gte: from, lt: to } },
+    select: { id: true, amount: true, method: true, reference: true, createdAt: true, salesReturn: { select: { sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } } } } },
+    orderBy: { createdAt: "asc" },
+  }),
+  dailyPaymentCorrections: (from: Date, to: Date) => prisma.saleCancellation.findMany({
+    where: { cancelledAt: { gte: from, lt: to } },
+    select: {
+      id: true, reason: true, collectedAmount: true, actualReceivedAmount: true,
+      pendingAmount: true, cancelledAt: true,
+      cancelledBy: { select: { name: true } },
+      sale: { select: {
+        id: true, invoiceNumber: true, totalAmount: true,
+        customer: { select: { name: true } },
+        payments: { select: { id: true, amount: true, method: true } },
+      } },
+      refunds: { select: { id: true, amount: true, method: true, reference: true, createdAt: true } },
+      paymentCorrections: { select: {
+        id: true, type: true, amount: true, method: true, reason: true,
+        originalPaymentId: true, createdAt: true,
+      } },
+    },
+    orderBy: { cancelledAt: "asc" },
   }),
   supplier: (id: string) => prisma.supplier.findUnique({
     where: { id },
@@ -91,6 +163,7 @@ export const reportModel = {
       select: {
         customerId: true,
         totalAmount: true,
+        returns: { select: { creditAppliedAmount: true } },
         customer: { select: { id: true, name: true, phone: true } },
         payments: { select: { amount: true } },
       },
