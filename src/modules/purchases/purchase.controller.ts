@@ -7,5 +7,10 @@ export const create = async (req: Request, res: Response) =>
 export const cancel = async (req: Request, res: Response) =>
   res.json({
     success: true,
-    data: await service.cancelPurchase(req.params.id as string),
+    data: await service.cancelPurchase(req.params.id as string, req.body, req.user!.id),
+  });
+export const settleRefund = async (req: Request, res: Response) =>
+  res.json({
+    success: true,
+    data: await service.settleSupplierRefund(req.params.id as string, req.body, req.user!.id),
   });

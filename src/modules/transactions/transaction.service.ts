@@ -4,6 +4,8 @@ import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { calculateInvoice, calculateLine } from "../../shared/money.js";
 import { validateQuantity } from "../../shared/quantity.js";
+import { purchaseCancellationBlockers } from "../purchases/purchase-eligibility.js";
+import { applySupplierCredits } from "../payments/supplier-credit.service.js";
 
 const dec = (n: Prisma.Decimal | number | string) => new Prisma.Decimal(n);
 type SaleCancellationInput = {
@@ -285,7 +287,7 @@ export async function createPurchase(input: any) {
       async (tx) => {
         const duplicate = await tx.purchase.findUnique({
           where: { idempotencyKey: input.idempotencyKey },
-          include: { items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true },
+          include: { items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true, supplierCreditApplications: { include: { reversals: true } } },
         });
         if (duplicate) return duplicate;
 
@@ -347,15 +349,17 @@ export async function createPurchase(input: any) {
           currentStock: { increment: quantity }, purchaseRate: rate, sellingPrice: sellingRate,
         } });
       }
+      await applySupplierCredits(tx, purchase.supplierId);
       return tx.purchase.findUniqueOrThrow({ where: { id: purchase.id }, include: {
         items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true,
+        supplierCreditApplications: { include: { reversals: true } },
       } });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },
     );
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       const duplicate = await prisma.purchase.findUnique({ where: { idempotencyKey: input.idempotencyKey }, include: {
-        items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true,
+        items: { include: { product: { include: { unit: true } }, inventoryBatch: true } }, payments: true, supplierCreditApplications: { include: { reversals: true } },
       } });
       if (duplicate) return duplicate;
     }
@@ -615,39 +619,115 @@ export async function settleCreditBillRefund(
   }
 }
 
-export async function cancelPurchase(id: string) {
+export async function cancelPurchase(id: string, input: any = { idempotencyKey: randomUUID(), reason: "Purchase cancelled", paymentGroupDecisions: [], refundNow: [], refundPending: [] }, userId?: string) {
   return prisma.$transaction(
     async (tx) => {
+      const priorCancellation = await tx.purchaseCancellation.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+        include: { supplierRefund: { include: { settlements: { include: { lines: true } } } }, supplierCredits: { include: { applications: true } }, supplierCreditApplicationReversals: true },
+      });
+      if (priorCancellation) {
+        const priorPurchase = await tx.purchase.findUniqueOrThrow({ where: { id: priorCancellation.purchaseId } });
+        return { ...priorPurchase, status: "CANCELLED", cancellation: priorCancellation };
+      }
       const purchase = await tx.purchase.findUnique({
         where: { id },
         include: {
-          items: { include: { product: { include: { unit: true } }, inventoryBatch: true } },
-          payments: true,
+          items: { include: { product: { include: { unit: true } }, inventoryBatch: { include: { saleItems: { select: { id: true } }, stockMovements: { select: { id: true } } } } } },
+          payments: { include: { reversals: true, transferDecisions: true } },
+          supplierCreditApplications: { where: { reversals: { none: {} } } },
+          cancellation: true,
         },
       });
       if (!purchase) throw new ApiError(404, "Purchase not found");
-      if (purchase.status === "CANCELLED") return purchase;
+      if (purchase.status === "CANCELLED")
+        throw new ApiError(409, "This purchase has already been cancelled");
       if (purchase.status !== "POSTED")
         throw new ApiError(409, "Only posted purchases can be cancelled");
-      if (purchase.payments.length)
-        throw new ApiError(
-          409,
-          "Purchases with recorded payments cannot be cancelled by this API",
-        );
-      for (const item of purchase.items) {
-        const batch = item.inventoryBatch;
-        if (
-          !batch ||
-          batch.productId !== item.productId ||
-          batch.purchaseItemId !== item.id ||
-          batch.source !== "PURCHASE" ||
-          batch.status !== "ACTIVE" ||
-          !batch.remainingQuantity.eq(batch.receivedQuantity)
-        )
-          throw new ApiError(
-            409,
-            "Purchase cannot be cancelled because its stock batch has been sold or adjusted",
-          );
+      const blockers = purchaseCancellationBlockers(purchase);
+      if (blockers.length)
+        throw new ApiError(409, `Cannot cancel purchase: ${blockers.map((entry: any) => `${entry.productName} ${entry.reason}`).join(" ")}`);
+
+      const reason = String(input.reason ?? "").trim();
+      if (!reason) throw new ApiError(400, "Cancellation reason is required");
+      const paymentGroups = new Map<string, { key: string; paymentGroupId: string | null; paymentIds: string[]; targetPayments: typeof purchase.payments }>();
+      for (const payment of purchase.payments) {
+        const key = payment.paymentGroupId ? `group:${payment.paymentGroupId}` : `payment:${payment.id}`;
+        const group = paymentGroups.get(key) ?? { key, paymentGroupId: payment.paymentGroupId, paymentIds: [], targetPayments: [] };
+        group.paymentIds.push(payment.id);
+        group.targetPayments.push(payment);
+        paymentGroups.set(key, group);
+      }
+      const decisionsInput = (input.paymentGroupDecisions ?? []) as Array<{ paymentGroupId?: string | null; paymentId?: string; wasTransferred: boolean }>;
+      const decisionByKey = new Map<string, boolean>();
+      for (const decision of decisionsInput) {
+        const key = decision.paymentGroupId ? `group:${decision.paymentGroupId}` : decision.paymentId ? `payment:${decision.paymentId}` : "";
+        if (!key || !paymentGroups.has(key) || decisionByKey.has(key))
+          throw new ApiError(400, "Choose whether each supplier payment was actually transferred");
+        decisionByKey.set(key, decision.wasTransferred);
+      }
+      if (decisionByKey.size !== paymentGroups.size)
+        throw new ApiError(400, "Confirm whether each supplier payment group was actually transferred");
+      const paymentGroupIds = [...new Set([...paymentGroups.values()].flatMap((group) => group.paymentGroupId ? [group.paymentGroupId] : []))];
+      const standalonePaymentIds = [...new Set([...paymentGroups.values()].flatMap((group) => group.paymentGroupId ? [] : group.paymentIds))];
+      const groupRows = purchase.payments.length ? await tx.supplierPayment.findMany({
+        where: { OR: [
+          ...(paymentGroupIds.length ? [{ paymentGroupId: { in: paymentGroupIds } }] : []),
+          ...(standalonePaymentIds.length ? [{ id: { in: standalonePaymentIds } }] : []),
+        ] },
+        include: { reversals: true, transferDecisions: true },
+      }) : [];
+      const groupRowsByKey = new Map<string, typeof groupRows>();
+      for (const payment of groupRows) {
+        const key = payment.paymentGroupId ? `group:${payment.paymentGroupId}` : `payment:${payment.id}`;
+        groupRowsByKey.set(key, [...(groupRowsByKey.get(key) ?? []), payment]);
+      }
+      for (const group of paymentGroups.values()) {
+        const rows = groupRowsByKey.get(group.key) ?? [];
+        if (!rows.some((row) => group.paymentIds.includes(row.id)) || rows.some((row) => row.supplierId !== purchase.supplierId))
+          throw new ApiError(409, "Supplier payment allocations changed; refresh and try again");
+        const existingDecisionValues = new Set(rows.flatMap((row) => row.transferDecisions.map((decision) => decision.wasTransferred)));
+        if (existingDecisionValues.size > 1 || (existingDecisionValues.size === 1 && !existingDecisionValues.has(decisionByKey.get(group.key)!)))
+          throw new ApiError(409, "This supplier payment group already has a different transfer decision");
+      }
+      const refundNow = input.refundNow ?? [];
+      const refundPending = input.refundPending ?? [];
+      const refundNowByPayment = new Map<string, Prisma.Decimal>();
+      const refundPendingByPayment = new Map<string, Prisma.Decimal>();
+      const addRefundLines = (lines: any[], target: Map<string, Prisma.Decimal>) => {
+        for (const line of lines) {
+          const payment = purchase.payments.find((row) => row.id === line.originalPaymentId);
+          if (!payment) throw new ApiError(400, "Each refund must link to an original payment on this purchase");
+          target.set(payment.id, (target.get(payment.id) ?? new Prisma.Decimal(0)).add(new Prisma.Decimal(line.amount)));
+        }
+      };
+      addRefundLines(refundNow, refundNowByPayment);
+      addRefundLines(refundPending, refundPendingByPayment);
+      const refundNowTotal = refundNow.reduce((sum: Prisma.Decimal, refund: any) => sum.add(new Prisma.Decimal(refund.amount)), new Prisma.Decimal(0));
+      const refundPendingTotal = refundPending.reduce((sum: Prisma.Decimal, refund: any) => sum.add(new Prisma.Decimal(refund.amount)), new Prisma.Decimal(0));
+      const netPaymentById = new Map(purchase.payments.map((payment) => [payment.id, Prisma.Decimal.max(new Prisma.Decimal(0), payment.amount.sub(payment.reversals.reduce((sum, reversal) => sum.add(reversal.amount), new Prisma.Decimal(0))))]));
+      const paidAmount = [...netPaymentById.values()].reduce((sum, value) => sum.add(value), new Prisma.Decimal(0));
+      for (const payment of purchase.payments) {
+        const refundAmount = (refundNowByPayment.get(payment.id) ?? new Prisma.Decimal(0)).add(refundPendingByPayment.get(payment.id) ?? new Prisma.Decimal(0));
+        const groupKey = payment.paymentGroupId ? `group:${payment.paymentGroupId}` : `payment:${payment.id}`;
+        if (refundAmount.gt(0) && !decisionByKey.get(groupKey))
+          throw new ApiError(400, "A refund can only be recorded when that payment was actually transferred");
+        if (refundAmount.gt(netPaymentById.get(payment.id) ?? new Prisma.Decimal(0)))
+          throw new ApiError(400, "Refund amounts cannot exceed the original payment allocation");
+      }
+      if (refundNowTotal.add(refundPendingTotal).gt(paidAmount))
+        throw new ApiError(400, "Refund amounts cannot exceed the payment allocated to this purchase");
+      const untransferredPurchaseIds = [...new Set([...paymentGroups.values()]
+        .filter((group) => !decisionByKey.get(group.key))
+        .flatMap((group) => (groupRowsByKey.get(group.key) ?? []).map((payment) => payment.purchaseId).filter((purchaseId): purchaseId is string => Boolean(purchaseId))))]
+        .filter((purchaseId) => purchaseId !== id)
+        .sort();
+      for (const affectedPurchaseId of untransferredPurchaseIds) {
+        const affectedPurchase = await tx.purchase.findUnique({ where: { id: affectedPurchaseId }, select: { status: true } });
+        if (affectedPurchase?.status !== "POSTED") continue;
+        const locked = await tx.purchase.updateMany({ where: { id: affectedPurchaseId, status: "POSTED" }, data: { updatedAt: new Date() } });
+        if (locked.count !== 1)
+          throw new ApiError(409, "A purchase in this payment group changed; refresh and try again");
       }
       const changedPurchase = await tx.purchase.updateMany({
         where: { id, status: "POSTED" },
@@ -655,7 +735,81 @@ export async function cancelPurchase(id: string) {
       });
       if (changedPurchase.count !== 1)
         throw new ApiError(409, "Purchase status changed while cancellation was being processed");
+      const cancellation = await tx.purchaseCancellation.create({
+        data: {
+          idempotencyKey: input.idempotencyKey,
+          purchaseId: purchase.id,
+          reason,
+          cancelledById: userId,
+        },
+        include: { paymentReversals: true },
+      });
+      const transferDecisionRows = [...paymentGroups.values()].flatMap((group) => (groupRowsByKey.get(group.key) ?? []).map((payment) => ({
+        cancellationId: cancellation.id,
+        originalPaymentId: payment.id,
+        paymentGroupId: payment.paymentGroupId,
+        wasTransferred: decisionByKey.get(group.key)!,
+      })));
+      if (transferDecisionRows.length)
+        await tx.supplierPaymentTransferDecision.createMany({ data: transferDecisionRows, skipDuplicates: true });
+
+      const paymentReversalRows: Array<{ cancellationId: string; originalPaymentId: string; amount: Prisma.Decimal; reason: string }> = [];
+      for (const group of paymentGroups.values()) {
+        const wasTransferred = decisionByKey.get(group.key)!;
+        const rows = wasTransferred ? group.targetPayments : groupRowsByKey.get(group.key) ?? [];
+        for (const payment of rows) {
+          const reversed = payment.reversals.reduce((sum, reversal) => sum.add(reversal.amount), new Prisma.Decimal(0));
+          const remaining = Prisma.Decimal.max(new Prisma.Decimal(0), payment.amount.sub(reversed));
+          if (remaining.gt(0)) paymentReversalRows.push({ cancellationId: cancellation.id, originalPaymentId: payment.id, amount: remaining, reason });
+        }
+      }
+      if (paymentReversalRows.length)
+        await tx.supplierPaymentReversal.createMany({ data: paymentReversalRows, skipDuplicates: true });
+      if (purchase.supplierCreditApplications.length) {
+        await tx.supplierCreditApplicationReversal.createMany({
+          data: purchase.supplierCreditApplications.map((application) => ({
+            cancellationId: cancellation.id,
+            applicationId: application.id,
+            amount: application.amount,
+          })),
+        });
+      }
+      if (refundNowTotal.add(refundPendingTotal).gt(0)) {
+        await tx.supplierRefund.create({
+          data: {
+            cancellationId: cancellation.id,
+            amount: refundNowTotal.add(refundPendingTotal),
+            settlements: refundNowTotal.gt(0) ? {
+              create: [{
+                idempotencyKey: input.idempotencyKey,
+                createdById: userId,
+                settledAt: input.refundDate ?? new Date(),
+                lines: { create: refundNow.map((refund: any) => ({ originalPaymentId: refund.originalPaymentId, amount: new Prisma.Decimal(refund.amount), method: refund.method, reference: refund.reference?.trim() || null })) },
+              }],
+            } : undefined,
+          },
+        });
+      }
+      for (const payment of purchase.payments) {
+        const groupKey = payment.paymentGroupId ? `group:${payment.paymentGroupId}` : `payment:${payment.id}`;
+        if (!decisionByKey.get(groupKey)) continue;
+        const refundedNow = refundNowByPayment.get(payment.id) ?? new Prisma.Decimal(0);
+        const refundPendingAmount = refundPendingByPayment.get(payment.id) ?? new Prisma.Decimal(0);
+        const retained = (netPaymentById.get(payment.id) ?? new Prisma.Decimal(0)).sub(refundedNow).sub(refundPendingAmount);
+        if (retained.gt(0)) {
+          await tx.supplierCredit.create({
+            data: {
+              supplierId: purchase.supplierId,
+              cancellationId: cancellation.id,
+              sourcePaymentId: payment.id,
+              amount: retained,
+            },
+          });
+        }
+      }
+      const quantitiesByProduct = new Map<string, Prisma.Decimal>();
       for (const item of purchase.items) {
+        quantitiesByProduct.set(item.productId, (quantitiesByProduct.get(item.productId) ?? new Prisma.Decimal(0)).add(item.quantity));
         const batch = item.inventoryBatch!;
         const changedBatch = await tx.inventoryBatch.updateMany({
           where: {
@@ -670,18 +824,93 @@ export async function cancelPurchase(id: string) {
         });
         if (changedBatch.count !== 1)
           throw new ApiError(409, "Purchase batch changed during cancellation; retry the request");
+      }
+      const stockAfterByProduct = new Map<string, Prisma.Decimal>();
+      for (const [productId, quantity] of quantitiesByProduct) {
         const changed = await tx.product.updateMany({
-          where: { id: item.productId, currentStock: { gte: item.quantity } },
-          data: { currentStock: { decrement: item.quantity } },
+          where: { id: productId, currentStock: { gte: quantity } },
+          data: { currentStock: { decrement: quantity } },
         });
         if (changed.count !== 1)
           throw new ApiError(
             409,
             "Purchase cannot be cancelled because some purchased stock has already been sold or adjusted",
           );
+        const product = await tx.product.findUniqueOrThrow({ where: { id: productId }, select: { currentStock: true } });
+        stockAfterByProduct.set(productId, product.currentStock);
       }
-      return { ...purchase, status: "CANCELLED" };
+      for (const item of purchase.items) {
+        await tx.stockMovement.create({
+          data: {
+            productId: item.productId,
+            inventoryBatchId: item.inventoryBatch!.id,
+            type: "PURCHASE_CANCEL",
+            direction: "OUT",
+            quantity: item.quantity,
+            stockAfter: stockAfterByProduct.get(item.productId)!,
+            reason: `Purchase cancellation ${purchase.purchaseNumber}`,
+            notes: reason,
+            createdById: userId,
+          },
+        });
+      }
+      await applySupplierCredits(tx, purchase.supplierId);
+      const finalCancellation = await tx.purchaseCancellation.findUniqueOrThrow({
+        where: { id: cancellation.id },
+        include: {
+          paymentReversals: true,
+          supplierRefund: { include: { settlements: { include: { lines: true } } } },
+          supplierCredits: { include: { applications: true } },
+          supplierCreditApplicationReversals: true,
+        },
+      });
+      return { ...purchase, status: "CANCELLED", supplierCreditApplications: [], cancellation: finalCancellation };
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },
   );
+}
+
+export async function settleSupplierRefund(purchaseId: string, input: any, userId?: string) {
+  return prisma.$transaction(async (tx) => {
+    const prior = await tx.supplierRefundSettlement.findUnique({ where: { idempotencyKey: input.idempotencyKey }, include: { lines: true } });
+    if (prior) return { id: prior.id, replayed: true };
+    const purchase = await tx.purchase.findUnique({
+      where: { id: purchaseId },
+      include: { cancellation: { include: { paymentReversals: true, supplierRefund: { include: { settlements: { include: { lines: true } } } } } } },
+    });
+    const refund = purchase?.cancellation?.supplierRefund;
+    if (!purchase || purchase.status !== "CANCELLED" || !refund)
+      throw new ApiError(404, "This cancelled purchase has no supplier refund to settle");
+    const settled = refund.settlements.flatMap((row) => row.lines).reduce((sum, line) => sum.add(line.amount), new Prisma.Decimal(0));
+    const pending = refund.amount.sub(settled);
+    const lines = input.refunds ?? [];
+    const settlementAmount = lines.reduce((sum: Prisma.Decimal, line: any) => sum.add(new Prisma.Decimal(line.amount)), new Prisma.Decimal(0));
+    if (settlementAmount.lte(0) || settlementAmount.gt(pending))
+      throw new ApiError(400, "Refund settlement must be positive and cannot exceed the pending supplier refund");
+    const allocationSettled = new Map<string, Prisma.Decimal>();
+    for (const line of refund.settlements.flatMap((row) => row.lines)) {
+      allocationSettled.set(line.originalPaymentId, (allocationSettled.get(line.originalPaymentId) ?? new Prisma.Decimal(0)).add(line.amount));
+    }
+    const allocationRequested = new Map<string, Prisma.Decimal>();
+    for (const line of lines) {
+      const originalPayment = purchase.cancellation!.paymentReversals.find((row) => row.originalPaymentId === line.originalPaymentId);
+      if (!originalPayment) throw new ApiError(400, "Each refund line must link to an original payment allocation on this purchase");
+      const requested = (allocationRequested.get(line.originalPaymentId) ?? new Prisma.Decimal(0)).add(new Prisma.Decimal(line.amount));
+      const alreadySettled = allocationSettled.get(line.originalPaymentId) ?? new Prisma.Decimal(0);
+      if (alreadySettled.add(requested).gt(originalPayment.amount))
+        throw new ApiError(400, "Refund settlement cannot exceed the remaining amount for its original payment allocation");
+      allocationRequested.set(line.originalPaymentId, requested);
+    }
+    const settlement = await tx.supplierRefundSettlement.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        refundId: refund.id,
+        createdById: userId,
+        settledAt: input.settledAt ?? new Date(),
+      lines: { create: lines.map((line: any) => ({ originalPaymentId: line.originalPaymentId, amount: new Prisma.Decimal(line.amount), method: line.method, reference: line.reference?.trim() || null })) },
+      },
+      include: { lines: true },
+    });
+    return { id: settlement.id, amount: settlementAmount.toFixed(2), pendingAmount: pending.sub(settlementAmount).toFixed(2), replayed: false };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 });
 }

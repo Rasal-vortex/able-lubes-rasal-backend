@@ -55,7 +55,7 @@ export async function dashboardSummary(month: string | undefined) {
   const range = monthBounds(month, now);
   const currentMonthRange = monthBounds(undefined, now);
 
-  const [sales, expenses, payments, verifiedCancellationPayments, salesReturns, monthSalesCount, chartSales, chartReturns, latestSales, customerRows, supplierRows] = await Promise.all([
+  const [sales, expenses, payments, verifiedCancellationPayments, salesReturns, supplierRefundSettlements, monthSalesCount, chartSales, chartReturns, latestSales, customerRows, supplierRows, supplierRefundRows] = await Promise.all([
     dashboardModel.todaySales(todayFrom, todayTo),
     dashboardModel.todayExpenses(todayFrom, todayTo),
     dashboardModel.todayPayments(todayFrom, todayTo),
@@ -65,12 +65,14 @@ export async function dashboardSummary(month: string | undefined) {
     typeof dashboardModel.todaySalesReturns === "function"
       ? dashboardModel.todaySalesReturns(todayFrom, todayTo)
       : Promise.resolve({ _sum: { amount: zero } }),
+    dashboardModel.todaySupplierRefundSettlements(todayFrom, todayTo),
     dashboardModel.monthSales(currentMonthRange.from, currentMonthRange.to),
     dashboardModel.chartSales(range.from, range.to),
     typeof dashboardModel.chartReturns === "function" ? dashboardModel.chartReturns(range.from, range.to) : Promise.resolve([]),
     dashboardModel.latestSales(),
     reportModel.customerSales(),
     reportModel.supplierPurchases(),
+    reportModel.supplierRefunds(),
   ]);
 
   const daily = new Map<string, { paidSales: Prisma.Decimal; creditSales: Prisma.Decimal }>();
@@ -106,6 +108,12 @@ export async function dashboardSummary(month: string | undefined) {
     const paid = row.payments.reduce((n: Prisma.Decimal, payment: any) => n.add(payment.amount), zero);
     return sum.add(Prisma.Decimal.max(zero, row.totalAmount.sub(paid)));
   }, zero);
+  const supplierRefundReceivable = supplierRefundRows.reduce((sum, refund: any) => {
+    const settled = refund.settlements.flatMap((settlement: any) => settlement.lines).reduce((total: Prisma.Decimal, line: any) => total.add(line.amount), zero);
+    return sum.add(Prisma.Decimal.max(zero, refund.amount.sub(settled)));
+  }, zero);
+  const supplierRefundsReceived = supplierRefundSettlements.reduce((sum: Prisma.Decimal, settlement: any) =>
+    sum.add(settlement.lines.reduce((lineTotal: Prisma.Decimal, line: any) => lineTotal.add(line.amount), zero)), zero);
 
   return {
     today: {
@@ -113,8 +121,9 @@ export async function dashboardSummary(month: string | undefined) {
       salesTotal: money((sales._sum.totalAmount ?? zero).sub(salesReturns._sum.amount ?? zero)),
       expensesTotal: money(expenses._sum.amount),
       paymentsCollected: money((payments._sum.amount ?? zero).add(verifiedCancellationPayments._sum.actualReceivedAmount ?? zero)),
+      supplierRefundsReceived: money(supplierRefundsReceived),
     },
-    balances: { customerOutstanding: money(customerOutstanding), supplierPayable: money(supplierPayable) },
+    balances: { customerOutstanding: money(customerOutstanding), supplierPayable: money(supplierPayable), supplierRefundReceivable: money(supplierRefundReceivable) },
     currentMonth: { month: `${today.year}-${today.month}`, salesCount: monthSalesCount },
     chart: {
       month: `${range.year}-${String(range.month).padStart(2, "0")}`,

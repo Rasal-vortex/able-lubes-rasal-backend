@@ -39,15 +39,25 @@ export const reportModel = {
   }),
   purchases: (from: Date, to: Date) =>
     prisma.purchase.findMany({
-      where: { status: "POSTED", purchaseDate: { gte: from, lte: to } },
+      where: { purchaseDate: { gte: from, lte: to } },
       select: {
+        id: true,
+        purchaseNumber: true,
+        supplierInvoiceNumber: true,
         purchaseDate: true,
         subtotal: true,
         discountAmount: true,
         totalAmount: true,
+        status: true,
+        cancellation: { select: { reason: true, cancelledAt: true } },
       },
       orderBy: { purchaseDate: "asc" },
     }),
+  purchaseCancellations: (from: Date, to: Date) => prisma.purchaseCancellation.findMany({
+    where: { cancelledAt: { gte: from, lte: to } },
+    select: { id: true, reason: true, cancelledAt: true, purchase: { select: { id: true, purchaseNumber: true, supplierInvoiceNumber: true, totalAmount: true, supplier: { select: { name: true } } } } },
+    orderBy: { cancelledAt: "asc" },
+  }),
   expenses: (from: Date, to: Date) =>
     prisma.expense.findMany({
       where: { expenseDate: { gte: from, lte: to } },
@@ -136,18 +146,20 @@ export const reportModel = {
     select: {
       id: true, name: true, phone: true,
       purchases: {
-        where: { status: "POSTED" },
-        select: {
-          id: true, purchaseNumber: true, purchaseDate: true, totalAmount: true,
+      select: {
+          id: true, purchaseNumber: true, purchaseDate: true, totalAmount: true, status: true, createdAt: true,
           supplierInvoiceNumber: true,
           items: {
             select: {
-              id: true, quantity: true, supplierRate: true, lineTotal: true,
+              id: true, purchaseId: true, productId: true, quantity: true, supplierRate: true, lineTotal: true,
               unitNameSnapshot: true, unitSymbolSnapshot: true,
               product: { select: { id: true, name: true } },
+              inventoryBatch: { select: { id: true, productId: true, purchaseItemId: true, source: true, status: true, receivedQuantity: true, remainingQuantity: true, saleItems: { select: { id: true } }, stockMovements: { select: { id: true } } } },
             },
           },
-          payments: { select: { id: true, paymentGroupId: true, amount: true, method: true, paymentDate: true, receiptNumber: true } },
+          payments: { select: { id: true, paymentGroupId: true, amount: true, method: true, paymentDate: true, receiptNumber: true, reversals: { select: { amount: true, reason: true, createdAt: true } }, transferDecisions: { select: { wasTransferred: true, cancellation: { select: { purchaseId: true, cancelledAt: true } } } } } },
+          supplierCreditApplications: { select: { id: true, creditId: true, amount: true, reversals: { select: { amount: true } } } },
+          cancellation: { select: { reason: true, cancelledAt: true, cancelledBy: { select: { id: true, name: true } }, paymentReversals: { select: { originalPaymentId: true, amount: true } }, supplierRefund: { select: { id: true, amount: true, settlements: { select: { id: true, idempotencyKey: true, settledAt: true, lines: { select: { amount: true, method: true, reference: true, originalPaymentId: true, originalPayment: { select: { method: true, receiptNumber: true } } } } } } } } } },
         },
         orderBy: [
           { purchaseDate: "asc" },
@@ -175,7 +187,22 @@ export const reportModel = {
         supplierId: true,
         totalAmount: true,
         supplier: { select: { id: true, name: true, phone: true } },
-        payments: { select: { amount: true } },
+        payments: { select: { amount: true, reversals: { select: { amount: true } } } },
+        supplierCreditApplications: { select: { amount: true, reversals: { select: { amount: true } } } },
       },
     }),
+  supplierCredits: (supplierId?: string) => prisma.supplierCredit.findMany({
+    where: supplierId ? { supplierId } : undefined,
+    select: { id: true, supplierId: true, amount: true, createdAt: true, sourcePaymentId: true, supplier: { select: { id: true, name: true, phone: true } }, applications: { select: { amount: true, reversals: { select: { amount: true } } } }, reversals: { select: { amount: true } } },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  }),
+  supplierRefunds: (supplierId?: string) => prisma.supplierRefund.findMany({
+    where: supplierId ? { cancellation: { purchase: { supplierId } } } : undefined,
+    select: {
+      id: true,
+      amount: true,
+      cancellation: { select: { cancelledAt: true, purchase: { select: { supplierId: true, supplier: { select: { id: true, name: true, phone: true } } } } } },
+      settlements: { select: { settledAt: true, lines: { select: { amount: true, method: true, reference: true } } } },
+    },
+  }),
 };

@@ -13,6 +13,7 @@ export const productSerializer = (p: any) => ({
   batches: p?.inventoryBatches?.map((batch: any) => ({
     id: batch.id,
     label: batch.label,
+    purchaseRate: batch.purchaseRate.toString(),
     sellingRate: batch.sellingRate.toString(),
     remainingQuantity: batch.remainingQuantity.toString(),
     receivedAt: batch.receivedAt,
