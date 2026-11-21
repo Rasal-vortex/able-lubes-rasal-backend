@@ -25,3 +25,34 @@ export const createPurchaseSchema = z.object({
   discountAmount: z.coerce.number().finite().min(0).default(0),
   items: z.array(purchaseLineSchema).min(1).max(100),
 });
+
+const supplierRefundLineSchema = z.object({
+  originalPaymentId: z.uuid(),
+  amount: z.coerce.number().finite().gt(0).max(9999999999.99),
+  method: z.enum(["CASH", "UPI", "BANK", "OTHER"]),
+  reference: z.string().trim().max(120).optional(),
+});
+
+export const cancelPurchaseSchema = z.object({
+  idempotencyKey: z.uuid(),
+  reason: z.string().trim().min(1).max(500),
+  paymentGroupDecisions: z.array(z.object({
+    paymentGroupId: z.uuid().nullable().optional(),
+    paymentId: z.uuid().optional(),
+    wasTransferred: z.boolean(),
+  }).refine((decision) => Boolean(decision.paymentGroupId) !== Boolean(decision.paymentId), {
+    message: "Provide exactly one payment group ID or payment ID",
+  })).max(100).default([]),
+  refundNow: z.array(supplierRefundLineSchema).max(10).default([]),
+  refundPending: z.array(z.object({
+    originalPaymentId: z.uuid(),
+    amount: z.coerce.number().finite().gt(0).max(9999999999.99),
+  })).max(10).default([]),
+  refundDate: z.coerce.date().optional(),
+});
+
+export const settleSupplierRefundSchema = z.object({
+  idempotencyKey: z.uuid(),
+  settledAt: z.coerce.date().optional(),
+  refunds: z.array(supplierRefundLineSchema).min(1).max(10),
+});

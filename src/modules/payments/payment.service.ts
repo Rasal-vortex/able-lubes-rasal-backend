@@ -120,17 +120,24 @@ export async function recordSupplierPayment(input: any) {
       const purchases = await tx.purchase.findMany({
         where: { supplierId: input.supplierId, status: "POSTED" },
         orderBy: [{ purchaseDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-        include: { payments: { select: { amount: true } } },
+        include: {
+          payments: { select: { amount: true, reversals: { select: { amount: true } } } },
+          supplierCreditApplications: { select: { amount: true, reversals: { select: { id: true } } } },
+        },
       });
       const outstandingByPurchase = new Map<string, Prisma.Decimal>();
       for (const purchase of purchases) {
         const alreadyPaid = purchase.payments.reduce(
-          (total, payment) => total.add(payment.amount),
+          (total, payment) => total.add(Prisma.Decimal.max(amount(0), payment.amount.sub(payment.reversals.reduce((reversed, row) => reversed.add(row.amount), amount(0))))),
+          amount(0),
+        );
+        const creditApplied = purchase.supplierCreditApplications.reduce(
+          (total, application) => application.reversals.length ? total : total.add(application.amount),
           amount(0),
         );
         outstandingByPurchase.set(
           purchase.id,
-          Prisma.Decimal.max(amount(0), purchase.totalAmount.sub(alreadyPaid)),
+          Prisma.Decimal.max(amount(0), purchase.totalAmount.sub(alreadyPaid).sub(creditApplied)),
         );
       }
       const allocations: Array<{
@@ -163,6 +170,16 @@ export async function recordSupplierPayment(input: any) {
             400,
             "Payment exceeds this supplier's total outstanding balance",
           );
+      }
+      // Serialize payment allocation against purchase cancellation by writing
+      // the same purchase rows, conditionally requiring them to remain posted.
+      for (const purchaseId of [...new Set(allocations.map((allocation) => allocation.purchaseId))]) {
+        const locked = await tx.purchase.updateMany({
+          where: { id: purchaseId, status: "POSTED" },
+          data: { updatedAt: new Date() },
+        });
+        if (locked.count !== 1)
+          throw new ApiError(409, "A purchase changed while recording payment; refresh and retry");
       }
       const paymentGroupId = randomUUID();
       const payments = await Promise.all(

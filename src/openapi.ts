@@ -271,9 +271,18 @@ export const openApiDocument = {
     },
     "/purchases/{id}/cancel": {
       post: {
-        summary: "Cancel an unpaid purchase and reverse stock",
+        summary: "Cancel a purchase and reverse stock with supplier credit or refund tracking",
+        description: "Requires a cancellation reason. Original supplier payments remain in history and their allocations are reversed. General supplier payments not actually refunded or explicitly marked as pending are transferred to supplier credit and applied FIFO to other outstanding purchases; unused credit remains available for future purchases. Only explicitly recorded actual or pending refunds create supplier refund records. Cancellation is all-or-nothing and is blocked when any original batch has sale, return, adjustment, or other stock movement history.",
         security: [{ bearerAuth: [] }],
-        responses: { "200": { description: "Cancelled purchase" } },
+        responses: { "200": { description: "Cancelled purchase with cancellation and refund status" }, "409": { description: "Purchase is already cancelled or stock history prevents safe cancellation" } },
+      },
+    },
+    "/purchases/{id}/refunds/settlements": {
+      post: {
+        summary: "Settle part or all of a pending supplier refund",
+        description: "Records actual funds received, linked to the original supplier payment allocation. Pending amounts do not affect cash or bank balances until a settlement is recorded. Idempotency prevents duplicate settlement submissions.",
+        security: [{ bearerAuth: [] }],
+        responses: { "200": { description: "Supplier refund settlement recorded" }, "409": { description: "Refund was already fully settled or purchase is not cancelled" } },
       },
     },
     "/customer-payments": {

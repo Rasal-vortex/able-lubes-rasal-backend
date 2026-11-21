@@ -14,6 +14,10 @@ export const dashboardModel = {
     where: { paymentDate: { gte: from, lt: to }, method: { in: ["CASH", "UPI"] }, sale: { status: "POSTED" } },
     _sum: { amount: true },
   }),
+  todaySupplierRefundSettlements: (from: Date, to: Date) => prisma.supplierRefundSettlement.findMany({
+    where: { settledAt: { gte: from, lt: to } },
+    select: { lines: { select: { amount: true, method: true } } },
+  }),
   todayVerifiedCancellationPayments: (from: Date, to: Date) => prisma.saleCancellation.aggregate({
     where: { cancelledAt: { gte: from, lt: to } },
     _sum: { actualReceivedAmount: true },

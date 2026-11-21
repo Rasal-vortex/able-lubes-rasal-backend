@@ -74,6 +74,7 @@ enum StockMovementType {
   OPENING_STOCK
   ADJUSTMENT
   SALE_RETURN
+  PURCHASE_CANCEL
 }
 
 enum StockDirection {
@@ -113,6 +114,8 @@ model User {
   paymentCorrections SalePaymentCorrection[] @relation("SalePaymentCorrectionCreatedBy")
   salesReturns SalesReturn[]
   salesReturnSettlements SalesReturnSettlement[]
+  purchaseCancellations PurchaseCancellation[]
+  supplierRefundSettlements SupplierRefundSettlement[]
   refreshSessions RefreshSession[]
 
   @@map("users")
@@ -232,6 +235,7 @@ model Supplier {
 
   purchases Purchase[]
   payments  SupplierPayment[]
+  supplierCredits SupplierCredit[]
 
   @@index([name])
   @@index([phone])
@@ -518,6 +522,8 @@ model Purchase {
 
   items    PurchaseItem[]
   payments SupplierPayment[]
+  cancellation PurchaseCancellation?
+  supplierCreditApplications SupplierCreditApplication[]
 
   @@index([supplierId, purchaseDate])
   @@index([status, purchaseDate])
@@ -579,11 +585,169 @@ model SupplierPayment {
   notes          String?
   receiptNumber  String?       @map("receipt_number")
   createdAt      DateTime      @default(now()) @map("created_at")
+  reversals      SupplierPaymentReversal[]
+  refundSettlementLines SupplierRefundSettlementLine[]
+  supplierCredits SupplierCredit[]
+  transferDecisions SupplierPaymentTransferDecision[]
 
   @@index([supplierId, paymentDate])
   @@index([purchaseId])
   @@index([paymentGroupId])
   @@map("supplier_payments")
+}
+
+model SupplierCredit {
+  id                String @id @default(uuid()) @db.Uuid
+  supplierId        String @map("supplier_id") @db.Uuid
+  supplier          Supplier @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  cancellationId    String @map("cancellation_id") @db.Uuid
+  cancellation      PurchaseCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  sourcePaymentId   String @map("source_payment_id") @db.Uuid
+  sourcePayment     SupplierPayment @relation(fields: [sourcePaymentId], references: [id], onDelete: Restrict)
+  amount            Decimal @db.Decimal(12, 2)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  applications      SupplierCreditApplication[]
+  reversals         SupplierCreditReversal[]
+
+  @@unique([cancellationId, sourcePaymentId])
+  @@index([supplierId, createdAt])
+  @@map("supplier_credits")
+}
+
+model SupplierCreditApplication {
+  id          String @id @default(uuid()) @db.Uuid
+  creditId    String @map("credit_id") @db.Uuid
+  credit      SupplierCredit @relation(fields: [creditId], references: [id], onDelete: Restrict)
+  purchaseId  String @map("purchase_id") @db.Uuid
+  purchase    Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  amount      Decimal @db.Decimal(12, 2)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  reversals   SupplierCreditApplicationReversal[]
+
+  @@index([creditId, createdAt])
+  @@index([purchaseId])
+  @@map("supplier_credit_applications")
+}
+
+model SupplierCreditApplicationReversal {
+  id              String @id @default(uuid()) @db.Uuid
+  cancellationId  String @map("cancellation_id") @db.Uuid
+  cancellation    PurchaseCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  applicationId   String @map("application_id") @db.Uuid
+  application     SupplierCreditApplication @relation(fields: [applicationId], references: [id], onDelete: Restrict)
+  amount          Decimal @db.Decimal(12, 2)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([cancellationId, applicationId])
+  @@index([applicationId])
+  @@map("supplier_credit_application_reversals")
+}
+
+model SupplierCreditReversal {
+  id             String               @id @default(uuid()) @db.Uuid
+  cancellationId String               @map("cancellation_id") @db.Uuid
+  cancellation   PurchaseCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  creditId       String               @map("credit_id") @db.Uuid
+  credit         SupplierCredit       @relation(fields: [creditId], references: [id], onDelete: Restrict)
+  amount         Decimal              @db.Decimal(12, 2)
+  reason         String
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([cancellationId, creditId])
+  @@index([creditId, createdAt])
+  @@map("supplier_credit_reversals")
+}
+
+model PurchaseCancellation {
+  id              String   @id @default(uuid()) @db.Uuid
+  idempotencyKey  String   @unique @map("idempotency_key") @db.Uuid
+  purchaseId      String   @unique @map("purchase_id") @db.Uuid
+  purchase        Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  reason          String
+  cancelledAt     DateTime @default(now()) @map("cancelled_at") @db.Timestamptz(3)
+  cancelledById   String?  @map("cancelled_by_id") @db.Uuid
+  cancelledBy     User?    @relation(fields: [cancelledById], references: [id], onDelete: Restrict)
+  paymentReversals SupplierPaymentReversal[]
+  paymentTransferDecisions SupplierPaymentTransferDecision[]
+  supplierRefund   SupplierRefund?
+  supplierCredits SupplierCredit[]
+  supplierCreditApplicationReversals SupplierCreditApplicationReversal[]
+  supplierCreditReversals SupplierCreditReversal[]
+
+  @@index([cancelledAt])
+  @@index([cancelledById])
+  @@map("purchase_cancellations")
+}
+
+model SupplierPaymentReversal {
+  id                String               @id @default(uuid()) @db.Uuid
+  cancellationId    String               @map("cancellation_id") @db.Uuid
+  cancellation      PurchaseCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  originalPaymentId String               @map("original_payment_id") @db.Uuid
+  originalPayment   SupplierPayment      @relation(fields: [originalPaymentId], references: [id], onDelete: Restrict)
+  amount            Decimal              @db.Decimal(12, 2)
+  reason            String
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([cancellationId, originalPaymentId])
+  @@index([originalPaymentId])
+  @@map("supplier_payment_reversals")
+}
+
+model SupplierPaymentTransferDecision {
+  id                String               @id @default(uuid()) @db.Uuid
+  cancellationId    String               @map("cancellation_id") @db.Uuid
+  cancellation      PurchaseCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  originalPaymentId String               @map("original_payment_id") @db.Uuid
+  originalPayment   SupplierPayment      @relation(fields: [originalPaymentId], references: [id], onDelete: Restrict)
+  paymentGroupId    String?              @map("payment_group_id") @db.Uuid
+  wasTransferred    Boolean              @map("was_transferred")
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([cancellationId, originalPaymentId])
+  @@index([paymentGroupId, createdAt])
+  @@map("supplier_payment_transfer_decisions")
+}
+
+model SupplierRefund {
+  id             String               @id @default(uuid()) @db.Uuid
+  cancellationId String               @unique @map("cancellation_id") @db.Uuid
+  cancellation   PurchaseCancellation @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  amount         Decimal              @db.Decimal(12, 2)
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  settlements    SupplierRefundSettlement[]
+
+  @@map("supplier_refunds")
+}
+
+model SupplierRefundSettlement {
+  id             String                         @id @default(uuid()) @db.Uuid
+  idempotencyKey String                         @unique @map("idempotency_key") @db.Uuid
+  refundId       String                         @map("refund_id") @db.Uuid
+  refund         SupplierRefund                 @relation(fields: [refundId], references: [id], onDelete: Restrict)
+  createdById    String?                        @map("created_by_id") @db.Uuid
+  createdBy      User?                          @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  settledAt      DateTime                       @default(now()) @map("settled_at") @db.Timestamptz(3)
+  lines          SupplierRefundSettlementLine[]
+
+  @@index([refundId, settledAt])
+  @@index([createdById])
+  @@map("supplier_refund_settlements")
+}
+
+model SupplierRefundSettlementLine {
+  id           String                   @id @default(uuid()) @db.Uuid
+  settlementId String                   @map("settlement_id") @db.Uuid
+  settlement   SupplierRefundSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  originalPaymentId String               @map("original_payment_id") @db.Uuid
+  originalPayment   SupplierPayment      @relation(fields: [originalPaymentId], references: [id], onDelete: Restrict)
+  amount       Decimal                  @db.Decimal(12, 2)
+  method       RefundMethod
+  reference    String?
+
+  @@index([settlementId])
+  @@index([originalPaymentId])
+  @@map("supplier_refund_settlement_lines")
 }
 
 model Expense {

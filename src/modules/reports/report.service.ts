@@ -1,4 +1,5 @@
 import { reportModel } from "./report.model.js";
+import { purchaseCancellationBlockers } from "../purchases/purchase-eligibility.js";
 import { Prisma } from "../../../generated/prisma/client.js";
 import { env } from "../../config/env.js";
 import { ApiError } from "../../shared/errors.js";
@@ -350,20 +351,74 @@ export async function profitReport(from: Date, to: Date) {
 export async function supplierLedger(id: string) {
   const supplier = await reportModel.supplier(id);
   if (!supplier) throw new ApiError(404, "Supplier not found");
+  const supplierCredits = await reportModel.supplierCredits(id);
   let billed = decimal(0);
   let paid = decimal(0);
+  let creditAppliedTotal = decimal(0);
   const purchases = supplier.purchases.map((purchase) => {
-    const purchasePaid = purchase.payments.reduce((value, payment) => value.add(payment.amount), decimal(0));
-    billed = billed.add(purchase.totalAmount);
-    paid = paid.add(purchasePaid);
+    const purchasePaid = purchase.payments.reduce((value, payment) => {
+      const reversed = payment.reversals.reduce((total, row) => total.add(row.amount), decimal(0));
+      return value.add(Prisma.Decimal.max(decimal(0), payment.amount.sub(reversed)));
+    }, decimal(0));
+    const creditApplied = purchase.supplierCreditApplications.reduce((value, application) => application.reversals.length ? value : value.add(application.amount), decimal(0));
+    if (purchase.status === "POSTED") {
+      billed = billed.add(purchase.totalAmount);
+      paid = paid.add(purchasePaid);
+      creditAppliedTotal = creditAppliedTotal.add(creditApplied);
+    }
+    const refund = purchase.cancellation?.supplierRefund;
+    const refundLines = refund?.settlements.flatMap((settlement) => settlement.lines) ?? [];
+    const refundSettled = refundLines
+      .reduce((total, line) => total.add(line.amount), decimal(0)) ?? decimal(0);
+    const settledByPayment = new Map<string, Prisma.Decimal>();
+    for (const line of refundLines) {
+      settledByPayment.set(line.originalPaymentId, (settledByPayment.get(line.originalPaymentId) ?? decimal(0)).add(line.amount));
+    }
+    const refundPending = refund ? Prisma.Decimal.max(decimal(0), refund.amount.sub(refundSettled)) : decimal(0);
+    const refundStatus = !refund || refund.amount.isZero()
+      ? "NO_REFUND_REQUIRED"
+      : refundPending.isZero() ? "FULLY_REFUNDED"
+        : refundSettled.isZero() ? "REFUND_PENDING" : "PARTIALLY_REFUNDED";
+    const blockers = purchaseCancellationBlockers(purchase);
     return {
       id: purchase.id,
       purchaseNumber: purchase.purchaseNumber,
       supplierInvoiceNumber: purchase.supplierInvoiceNumber,
       date: purchase.purchaseDate,
+      status: purchase.status,
       total: purchase.totalAmount.toFixed(2),
       paid: purchasePaid.toFixed(2),
-      outstanding: Prisma.Decimal.max(decimal(0), purchase.totalAmount.sub(purchasePaid)).toFixed(2),
+      creditApplied: creditApplied.toFixed(2),
+      outstanding: purchase.status === "POSTED" ? Prisma.Decimal.max(decimal(0), purchase.totalAmount.sub(purchasePaid).sub(creditApplied)).toFixed(2) : "0.00",
+      cancellationEligibility: { eligible: purchase.status === "POSTED" && blockers.length === 0, reasons: blockers.map((blocker) => blocker.reason), blockers },
+      cancellation: purchase.cancellation ? {
+        reason: purchase.cancellation.reason,
+        cancelledAt: purchase.cancellation.cancelledAt,
+        cancelledBy: purchase.cancellation.cancelledBy,
+        refund: refund ? {
+          id: refund.id,
+          amount: refund.amount.toFixed(2),
+          settled: refundSettled.toFixed(2),
+          pending: refundPending.toFixed(2),
+          status: refundStatus,
+          settlements: refund.settlements.map((settlement) => ({
+            id: settlement.id,
+            date: settlement.settledAt,
+            lines: settlement.lines.map((line) => ({ originalPaymentId: line.originalPaymentId, amount: line.amount.toFixed(2), method: line.method, reference: line.reference })),
+          })),
+          allocations: purchase.payments.map((payment) => {
+            const allocationSettled = settledByPayment.get(payment.id) ?? decimal(0);
+            return {
+              originalPaymentId: payment.id,
+              paidAmount: payment.amount.toFixed(2),
+              settled: allocationSettled.toFixed(2),
+              pending: Prisma.Decimal.max(decimal(0), payment.amount.sub(allocationSettled)).toFixed(2),
+              method: payment.method,
+              receiptNumber: payment.receiptNumber,
+            };
+          }),
+        } : { amount: "0.00", settled: "0.00", pending: "0.00", status: refundStatus, settlements: [] },
+      } : null,
       items: purchase.items.map((item) => ({
         id: item.id,
         productId: item.product.id,
@@ -375,22 +430,41 @@ export async function supplierLedger(id: string) {
         lineTotal: item.lineTotal.toFixed(2),
       })),
       payments: purchase.payments.map((payment) => ({
-        id: payment.id, paymentGroupId: payment.paymentGroupId, amount: payment.amount.toFixed(2), method: payment.method, date: payment.paymentDate, receiptNumber: payment.receiptNumber,
+        id: payment.id, paymentGroupId: payment.paymentGroupId, amount: payment.amount.toFixed(2), reversedAmount: payment.reversals.reduce((total, reversal) => total.add(reversal.amount), decimal(0)).toFixed(2), reversalHistory: payment.reversals.map((reversal) => ({ amount: reversal.amount.toFixed(2), reason: reversal.reason, date: reversal.createdAt })), transferDecisions: payment.transferDecisions.map((decision) => ({ wasTransferred: decision.wasTransferred, cancellationPurchaseId: decision.cancellation.purchaseId, decidedAt: decision.cancellation.cancelledAt })), method: payment.method, date: payment.paymentDate, receiptNumber: payment.receiptNumber,
       })),
     };
   });
+  const supplierRefunds = await reportModel.supplierRefunds(id);
+  const refundReceivable = supplierRefunds
+    .filter((refund) => refund.cancellation.purchase.supplierId === id)
+    .reduce((sum, refund) => {
+      const settled = refund.settlements.flatMap((settlement) => settlement.lines).reduce((total, line) => total.add(line.amount), decimal(0));
+      return sum.add(Prisma.Decimal.max(decimal(0), refund.amount.sub(settled)));
+    }, decimal(0));
+  const supplierCreditBalance = supplierCredits.reduce((total, credit) => {
+    const applied = credit.applications.reduce((applicationTotal, application) => application.reversals.length ? applicationTotal : applicationTotal.add(application.amount), decimal(0));
+    const reversed = credit.reversals.reduce((reversalTotal, reversal) => reversalTotal.add(reversal.amount), decimal(0));
+    return total.add(Prisma.Decimal.max(decimal(0), credit.amount.sub(applied).sub(reversed)));
+  }, decimal(0));
   return {
     supplier: { id: supplier.id, name: supplier.name, phone: supplier.phone },
-    totals: { billed: billed.toFixed(2), paid: paid.toFixed(2), outstanding: Prisma.Decimal.max(decimal(0), billed.sub(paid)).toFixed(2) },
+    totals: { billed: billed.toFixed(2), paid: paid.toFixed(2), creditApplied: creditAppliedTotal.toFixed(2), outstanding: Prisma.Decimal.max(decimal(0), billed.sub(paid).sub(creditAppliedTotal)).toFixed(2), supplierCredit: supplierCreditBalance.toFixed(2), refundReceivable: refundReceivable.toFixed(2) },
     purchases,
   };
 }
 export async function purchaseReport(from: Date, to: Date) {
-  const rows = await reportModel.purchases(from, to);
+  const [rows, cancellations] = await Promise.all([reportModel.purchases(from, to), reportModel.purchaseCancellations(from, to)]);
+  const activeRows = rows.filter((row) => row.status === "POSTED");
+  const cancelledAmount = sum(cancellations.map((row) => row.purchase.totalAmount));
+  const purchaseTotal = sum(activeRows.map((row) => row.totalAmount));
   return {
-    count: rows.length,
-    total: sum(rows.map((r) => r.totalAmount)),
-    data: rows,
+    count: activeRows.length,
+    total: purchaseTotal,
+    cancellationCount: cancellations.length,
+    cancellationTotal: cancelledAmount,
+    netTotal: decimal(purchaseTotal).sub(cancelledAmount).toFixed(2),
+    cancellations: cancellations.map((row) => ({ id: row.id, date: row.cancelledAt, purchaseId: row.purchase.id, purchaseNumber: row.purchase.supplierInvoiceNumber || row.purchase.purchaseNumber, supplierName: row.purchase.supplier.name, amount: row.purchase.totalAmount.toFixed(2), reason: row.reason })),
+    data: rows.map((row) => ({ ...row, totalAmount: row.totalAmount.toFixed(2), subtotal: row.subtotal.toFixed(2), discountAmount: row.discountAmount.toFixed(2) })),
   };
 }
 export async function expenseReport(from: Date, to: Date) {
@@ -422,7 +496,7 @@ export async function customerOutstanding() {
       paid: decimal(0),
     };
     x.invoiced = x.invoiced.add(row.totalAmount.sub(row.returns.reduce((total, salesReturn) => total.add(salesReturn.creditAppliedAmount), decimal(0))));
-    x.paid = x.paid.add(sum(row.payments.map((p) => p.amount)));
+    x.paid = x.paid.add(sum(row.payments.map((payment) => payment.amount)));
     balances.set(customer.id, x);
   }
   return [...balances.values()]
@@ -435,7 +509,7 @@ export async function customerOutstanding() {
     }));
 }
 export async function supplierOutstanding() {
-  const rows = await reportModel.supplierPurchases();
+  const [rows, refunds, credits] = await Promise.all([reportModel.supplierPurchases(), reportModel.supplierRefunds(), reportModel.supplierCredits()]);
   const balances = new Map<string, any>();
   for (const row of rows) {
     const supplier = row.supplier;
@@ -443,23 +517,48 @@ export async function supplierOutstanding() {
       ...supplier,
       purchased: decimal(0),
       paid: decimal(0),
+      creditApplied: decimal(0),
+      supplierCredit: decimal(0),
+      refundReceivable: decimal(0),
     };
     x.purchased = x.purchased.add(row.totalAmount);
-    x.paid = x.paid.add(sum(row.payments.map((p) => p.amount)));
+    x.paid = x.paid.add(sum(row.payments.map((payment) => {
+      const reversed = payment.reversals.reduce((total, reversal) => total.add(reversal.amount), decimal(0));
+      return Prisma.Decimal.max(decimal(0), payment.amount.sub(reversed));
+    })));
+    x.creditApplied = x.creditApplied.add(row.supplierCreditApplications.reduce((total, application) => application.reversals.length ? total : total.add(application.amount), decimal(0)));
+    balances.set(supplier.id, x);
+  }
+  for (const credit of credits) {
+    const supplier = credit.supplier;
+    const x = balances.get(credit.supplierId) ?? { ...supplier, purchased: decimal(0), paid: decimal(0), creditApplied: decimal(0), supplierCredit: decimal(0), refundReceivable: decimal(0) };
+    const applied = credit.applications.reduce((total, application) => application.reversals.length ? total : total.add(application.amount), decimal(0));
+    const reversed = credit.reversals.reduce((reversalTotal, reversal) => reversalTotal.add(reversal.amount), decimal(0));
+    x.supplierCredit = (x.supplierCredit ?? decimal(0)).add(Prisma.Decimal.max(decimal(0), credit.amount.sub(applied).sub(reversed)));
+    balances.set(credit.supplierId, x);
+  }
+  for (const refund of refunds) {
+    const supplier = refund.cancellation.purchase.supplier;
+    const x = balances.get(supplier.id) ?? { ...supplier, purchased: decimal(0), paid: decimal(0), refundReceivable: decimal(0) };
+    const settled = refund.settlements.flatMap((settlement) => settlement.lines).reduce((total, line) => total.add(line.amount), decimal(0));
+    x.refundReceivable = x.refundReceivable.add(Prisma.Decimal.max(decimal(0), refund.amount.sub(settled)));
     balances.set(supplier.id, x);
   }
   return [...balances.values()].map((x) => ({
     ...x,
-    outstanding: Prisma.Decimal.max(0, x.purchased.sub(x.paid)).toFixed(2),
+    outstanding: Prisma.Decimal.max(0, x.purchased.sub(x.paid).sub(x.creditApplied ?? decimal(0))).toFixed(2),
+    supplierCredit: (x.supplierCredit ?? decimal(0)).toFixed(2),
+    refundReceivable: x.refundReceivable.toFixed(2),
     purchased: x.purchased.toFixed(2),
     paid: x.paid.toFixed(2),
   }));
 }
 export async function monthlySummary(from: Date, to: Date) {
-  const [sales, salesReturns, purchases, expenses] = await Promise.all([
+  const [sales, salesReturns, purchases, purchaseCancellations, expenses] = await Promise.all([
     reportModel.sales(from, to),
     reportModel.salesReturns(from, to),
     reportModel.purchases(from, to),
+    reportModel.purchaseCancellations(from, to),
     reportModel.expenses(from, to),
   ]);
   const groups = new Map<string, any>();
@@ -477,6 +576,7 @@ export async function monthlySummary(from: Date, to: Date) {
   sales.forEach((x) => apply(x.billDate, "sales", x.totalAmount));
   salesReturns.forEach((x) => apply(x.returnedAt, "sales", x.amount.neg()));
   purchases.forEach((x) => apply(x.purchaseDate, "purchases", x.totalAmount));
+  purchaseCancellations.forEach((x) => apply(x.cancelledAt, "purchases", x.purchase.totalAmount.neg()));
   expenses.forEach((x) => apply(x.expenseDate, "expenses", x.amount));
   return [...groups.values()].map((x) => ({
     ...x,
