@@ -322,6 +322,7 @@ model SaleItem {
 
 model CustomerPayment {
   id          String        @id @default(uuid()) @db.Uuid
+  idempotencyKey String?    @unique @map("idempotency_key") @db.Uuid
   customerId  String?       @map("customer_id") @db.Uuid
   customer    Customer?     @relation(fields: [customerId], references: [id], onDelete: Restrict)
   saleId      String?       @map("sale_id") @db.Uuid
@@ -353,6 +354,7 @@ model SaleCancellation {
   pendingAmount   Decimal     @default(0) @map("pending_amount") @db.Decimal(12, 2)
   refunds         SaleRefund[]
   paymentCorrections SalePaymentCorrection[]
+  storeCreditRestorations CustomerStoreCreditTransaction[]
 
   @@index([cancelledAt])
   @@index([cancelledById])
@@ -464,10 +466,16 @@ model CustomerStoreCreditTransaction {
   sale          Sale?                   @relation(fields: [saleId], references: [id], onDelete: Restrict)
   paymentId     String?                 @unique @map("payment_id") @db.Uuid
   payment       CustomerPayment?        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  cancellationId String?                @map("cancellation_id") @db.Uuid
+  cancellation  SaleCancellation?       @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  reversalOfTransactionId String?        @unique @map("reversal_of_transaction_id") @db.Uuid
+  reversalOfTransaction CustomerStoreCreditTransaction? @relation("CustomerStoreCreditReversals", fields: [reversalOfTransactionId], references: [id], onDelete: Restrict)
+  reversedBy CustomerStoreCreditTransaction? @relation("CustomerStoreCreditReversals")
   createdAt     DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@index([customerId, createdAt])
   @@index([saleId])
+  @@index([cancellationId])
   @@map("customer_store_credit_transactions")
 }
 

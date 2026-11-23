@@ -394,11 +394,26 @@ async function cancelSaleWithinTransaction(
       const reason = input.reason.trim();
       if (!reason) throw new ApiError(400, "Cancellation reason is required");
       const recordedCollected = sale.payments
-        .filter((payment) => payment.method !== "COUPON")
+        .filter((payment) => payment.method === "CASH" || payment.method === "UPI")
         .reduce((total, payment) => total.add(payment.amount), dec(0));
       const actualPayments = input.actualPayments ?? sale.payments
-        .filter((payment) => payment.method !== "COUPON")
+        .filter((payment) => payment.method === "CASH" || payment.method === "UPI")
         .map((payment) => ({ amount: payment.amount, method: payment.method as "CASH" | "UPI" }));
+      const storeCreditPayments = sale.payments.filter((payment) => payment.method === "STORE_CREDIT");
+      const storeCreditDebits = storeCreditPayments.length
+        ? await tx.customerStoreCreditTransaction.findMany({
+            where: { paymentId: { in: storeCreditPayments.map((payment) => payment.id) } },
+          })
+        : [];
+      if (storeCreditPayments.length) {
+        if (!sale.customerId)
+          throw new ApiError(409, "Store credit on this sale has no customer to restore it to");
+        for (const payment of storeCreditPayments) {
+          const debit = storeCreditDebits.find((entry) => entry.paymentId === payment.id);
+          if (!debit || debit.type !== "DEBIT" || debit.customerId !== sale.customerId || debit.saleId !== sale.id || !dec(debit.amount).eq(payment.amount))
+            throw new ApiError(409, "Store credit history for this sale is incomplete; cancellation was stopped to protect the customer balance");
+        }
+      }
       const actualByMethod = new Map<string, Prisma.Decimal>();
       for (const payment of actualPayments) {
         const amount = dec(payment.amount);
@@ -427,7 +442,7 @@ async function cancelSaleWithinTransaction(
         createdById?: string;
       }> = [];
       for (const payment of sale.payments) {
-        if (payment.method === "COUPON") continue;
+        if (payment.method !== "CASH" && payment.method !== "UPI") continue;
         const method = payment.method as "CASH" | "UPI";
         const remainingActual = actualByMethod.get(method) ?? dec(0);
         const retained = Prisma.Decimal.min(payment.amount, remainingActual);
@@ -499,6 +514,18 @@ async function cancelSaleWithinTransaction(
           })) } : undefined,
         },
       });
+      if (storeCreditPayments.length) {
+        await Promise.all(storeCreditDebits.map((debit) => tx.customerStoreCreditTransaction.create({
+          data: {
+            customerId: debit.customerId,
+            type: "CREDIT",
+            amount: debit.amount,
+            saleId: sale.id,
+            cancellationId: cancellation.id,
+            reversalOfTransactionId: debit.id,
+          },
+        })));
+      }
       for (const [batchId, quantity] of quantitiesByBatch) {
         const batch = batches.get(batchId)!;
         if (batch.remainingQuantity.add(quantity).gt(batch.receivedQuantity))

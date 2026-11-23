@@ -3,12 +3,21 @@ export const customerPaymentSchema = z
   .object({
     customerId: z.uuid().optional(),
     saleId: z.uuid(),
+    idempotencyKey: z.uuid().optional(),
     amount: z.coerce.number().finite().positive().max(9999999999.99),
     paymentDate: z.coerce.date().optional(),
     method: z.enum(["CASH", "UPI", "COUPON", "STORE_CREDIT"]),
     notes: z.string().trim().max(1000).optional(),
   })
   .superRefine((payment, ctx) => {
+    if (payment.method === "STORE_CREDIT") {
+      if (!payment.idempotencyKey) {
+        ctx.addIssue({ code: "custom", path: ["idempotencyKey"], message: "Store credit payments require an idempotency key" });
+      }
+      if (!Number.isInteger(payment.amount)) {
+        ctx.addIssue({ code: "custom", path: ["amount"], message: "Store credit must be a whole rupee amount" });
+      }
+    }
     if (payment.method !== "COUPON") return;
     if (!payment.notes) return;
     const match = /^Coupon code: (.+)$/.exec(payment.notes ?? "");

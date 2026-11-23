@@ -4,12 +4,29 @@ import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { paymentModel } from "./payment.model.js";
 import { paymentSerializer } from "./payment.serializer.js";
-const amount = (value: number | string) => new Prisma.Decimal(value);
+const amount = (value: Prisma.Decimal | number | string) => new Prisma.Decimal(value);
 
 export async function recordCustomerPayment(input: any) {
-  return prisma.$transaction(
-    async (tx) => {
-      const sale = await paymentModel.sale(input.saleId, tx);
+  const resolveIdempotentPayment = async (payment: any) => {
+    if (!payment) return null;
+    const matches =
+      payment.saleId === input.saleId &&
+      payment.customerId === (input.customerId ?? payment.customerId) &&
+      payment.method === input.method &&
+      amount(payment.amount).eq(amount(input.amount));
+    if (!matches) throw new ApiError(409, "This payment request key was already used for different payment details");
+    return paymentSerializer(payment);
+  };
+
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        if (input.idempotencyKey) {
+          const prior = await tx.customerPayment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+          const resolved = await resolveIdempotentPayment(prior);
+          if (resolved) return resolved;
+        }
+        const sale = await paymentModel.sale(input.saleId, tx);
       if (!sale || sale.status !== "POSTED")
         throw new ApiError(404, "Posted sale not found");
       if (input.customerId && sale.customerId !== input.customerId)
@@ -82,9 +99,17 @@ export async function recordCustomerPayment(input: any) {
         tx,
       );
       return paymentSerializer(payment);
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-  );
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (error) {
+    if (input.idempotencyKey && error instanceof Prisma.PrismaClientKnownRequestError && ["P2002", "P2034"].includes(error.code)) {
+      const prior = await prisma.customerPayment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+      const resolved = await resolveIdempotentPayment(prior);
+      if (resolved) return resolved;
+    }
+    throw error;
+  }
 }
 
 export async function recordSupplierPayment(input: any) {
