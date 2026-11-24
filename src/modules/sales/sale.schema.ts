@@ -42,6 +42,7 @@ const saleLineSchema = z.object({
 }, { message: "Gram display quantity and unit must be provided together", path: ["displayQuantity"] });
 export const createSaleSchema = z
   .object({
+    idempotencyKey: z.uuid(),
     customerId: z.uuid().optional().nullable(),
     creditBill: z.object({
       billNumber: z.string().trim().min(1).max(80),
@@ -58,6 +59,12 @@ export const createSaleSchema = z
       .positive()
       .max(9999999999.99)
       .optional(),
+    paymentAllocations: z.array(z.object({
+      method: z.enum(["CASH", "UPI", "COUPON", "STORE_CREDIT", "CREDIT"]),
+      amount: z.coerce.number().finite().min(0).max(9999999999.99)
+        .refine((value) => Math.abs(value * 100 - Math.round(value * 100)) < 0.000001, "Payment amounts support up to two decimal places"),
+      notes: z.string().trim().max(1000).optional(),
+    })).max(5),
     items: z.array(saleLineSchema).min(1).max(100),
   })
   .refine((x) => Boolean(x.couponCode) === (x.couponPrice !== undefined), {

@@ -152,12 +152,19 @@ export async function dailySales(date: string) {
     };
     bill.payments.push({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes });
     bySale.set(sale.id, bill);
-    collected = collected.add(payment.amount);
-    byMethod.set(payment.method, (byMethod.get(payment.method) ?? decimal(0)).add(payment.amount));
+    if (payment.method === "CASH" || payment.method === "UPI") {
+      collected = collected.add(payment.amount);
+      byMethod.set(payment.method, (byMethod.get(payment.method) ?? decimal(0)).add(payment.amount));
+    }
   }
   for (const sale of billedSales) {
     const lineRevenueTotal = sale.items.reduce((sum, item) => sum.add(item.lineTotal), decimal(0));
+    const paymentDerivedSale = bySale.get(sale.id);
+    const paymentsById = new Map<string, any>();
+    for (const payment of [...(paymentDerivedSale?.payments ?? []), ...sale.payments.map((payment) => ({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes }))])
+      paymentsById.set(payment.id, payment);
     bySale.set(sale.id, {
+      ...paymentDerivedSale,
       id: sale.id,
       saleId: sale.id,
       invoiceNumber: sale.invoiceNumber,
@@ -184,7 +191,7 @@ export async function dailySales(date: string) {
         returnedQuantity: item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0)).toString(),
         returnedAmount: item.returns.reduce((sum, row) => sum.add(row.amount), decimal(0)).toFixed(2),
       })),
-      payments: sale.payments.map((payment) => ({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes })),
+      payments: [...paymentsById.values()],
       lineRevenueTotal: lineRevenueTotal.toFixed(2),
     });
   }
@@ -261,7 +268,12 @@ export async function dailySales(date: string) {
       refunded: sum([...refunds.map((refund) => refund.amount), ...returnRefunds.map((refund) => refund.amount)]),
       byMethod: [...byMethod.entries()].map(([method, amount]) => ({ method, amount: amount.toFixed(2) })),
     },
-    invoices: [...bySale.values()],
+    invoices: [...bySale.values()].map((sale) => {
+      const paymentsReceived = sale.payments.filter((payment: any) => payment.method === "CASH" || payment.method === "UPI").reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
+      const allocatedPayments = sale.payments.reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
+      const creditAmount = bucketDate(sale.billDate) === date ? Prisma.Decimal.max(decimal(0), decimal(sale.totalAmount).sub(allocatedPayments)) : decimal(0);
+      return { ...sale, paymentsReceived: paymentsReceived.toFixed(2), creditAmount: creditAmount.toFixed(2) };
+    }),
     paymentCorrections,
     creditCancellations,
     refunds: [

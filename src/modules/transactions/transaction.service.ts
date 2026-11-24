@@ -1,5 +1,5 @@
 import { Prisma } from "../../../generated/prisma/client.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { calculateInvoice, calculateLine } from "../../shared/money.js";
@@ -41,9 +41,17 @@ const totalDiscount = (rows: Array<{ discountAmount: number }>) =>
   rows.reduce((total, row) => total.add(dec(row.discountAmount)), dec(0));
 
 export async function createSale(input: any, attempt = 0) {
+  if (!Array.isArray(input.paymentAllocations))
+    throw new ApiError(400, "Payment allocations are required to create a sale");
+  const requestHash = createHash("sha256").update(JSON.stringify({ ...input, idempotencyKey: undefined })).digest("hex");
   try {
     return await prisma.$transaction(
     async (tx) => {
+      const priorSale = await tx.sale.findUnique({ where: { idempotencyKey: input.idempotencyKey }, include: { items: { include: { product: { include: { unit: true } } } }, payments: true, coupon: true } });
+      if (priorSale) {
+        if (priorSale.requestHash !== requestHash) throw new ApiError(409, "This idempotency key was already used for a different sale");
+        return priorSale;
+      }
       const billDate = input.billDate ?? new Date();
       const dateKey = invoiceDateKey(billDate);
       const invoiceCounter = await tx.saleInvoiceCounter.upsert({
@@ -136,6 +144,22 @@ export async function createSale(input: any, attempt = 0) {
           "Invoice discount cannot exceed the remaining subtotal",
         );
       }
+      const allocations = input.paymentAllocations as Array<{ method: "CASH" | "UPI" | "COUPON" | "STORE_CREDIT" | "CREDIT"; amount: number | string; notes?: string }>;
+      let allocationTotal = dec(0);
+      let creditAmount = dec(0);
+      for (const allocation of allocations) {
+        const value = dec(allocation.amount);
+        if (value.isNegative() || !value.eq(value.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)))
+          throw new ApiError(400, "Payment amounts must be non-negative and support up to two decimal places");
+        allocationTotal = allocationTotal.add(value);
+        if (allocation.method === "CREDIT") creditAmount = creditAmount.add(value);
+      }
+      if (!allocationTotal.eq(totals.total))
+        throw new ApiError(400, allocationTotal.lt(totals.total) ? "Payment allocations are less than the final bill total" : "Payment allocations exceed the final bill total");
+      if (creditAmount.gt(0) && (!input.customerId || !input.creditBill))
+        throw new ApiError(400, "A registered customer and credit bill details are required for credit allocations");
+      if (creditAmount.isZero() && input.creditBill)
+        throw new ApiError(400, "A credit bill cannot be created without a Credit allocation");
       // Conditional decrement is atomic at the row level and prevents concurrent overselling.
       for (const [batchId, quantity] of quantityByBatch) {
         const batch = batchById.get(batchId)!;
@@ -166,6 +190,8 @@ export async function createSale(input: any, attempt = 0) {
       }
       const sale = await tx.sale.create({
         data: {
+          idempotencyKey: input.idempotencyKey,
+          requestHash,
           invoiceNumber,
           customerId: input.customerId ?? null,
           billDate,
@@ -209,7 +235,29 @@ export async function createSale(input: any, attempt = 0) {
           },
         });
       }
-      return sale;
+      for (const allocation of allocations) {
+        if (allocation.method === "CREDIT" || dec(allocation.amount).isZero()) continue;
+        const value = dec(allocation.amount);
+        let notes = allocation.notes;
+        if (allocation.method === "STORE_CREDIT") {
+          if (!sale.customerId) throw new ApiError(400, "Store Credit requires a registered customer");
+          const balances = await tx.customerStoreCreditTransaction.groupBy({ by: ["type"], where: { customerId: sale.customerId }, _sum: { amount: true } });
+          const available = balances.reduce((balance, row) => balance.add(row.type === "CREDIT" ? row._sum.amount ?? dec(0) : (row._sum.amount ?? dec(0)).neg()), dec(0));
+          if (value.gt(available)) throw new ApiError(400, "Store Credit exceeds the customer's available balance");
+        }
+        if (allocation.method === "COUPON") {
+          const code = /^Coupon code: (.+)$/.exec(notes ?? "")?.[1];
+          if (code) {
+            if (await tx.coupon.findUnique({ where: { code }, select: { id: true } })) throw new ApiError(409, "Use an unrecorded coupon code for a split sale payment");
+            if (await tx.customerPayment.findFirst({ where: { method: "COUPON", notes: `Coupon code: ${code}` }, select: { id: true } })) throw new ApiError(409, "This coupon code has already been used");
+          } else notes = "Coupon payment (no code)";
+        }
+        const payment = await tx.customerPayment.create({ data: { customerId: sale.customerId, saleId: sale.id, amount: value, method: allocation.method, paymentDate: billDate, notes } });
+        if (allocation.method === "STORE_CREDIT") await tx.customerStoreCreditTransaction.create({ data: { customerId: sale.customerId!, type: "DEBIT", amount: value, saleId: sale.id, paymentId: payment.id } });
+      }
+      const paidAmount = allocations.filter((allocation) => allocation.method !== "CREDIT").reduce((total, allocation) => total.add(dec(allocation.amount)), dec(0));
+      await tx.sale.update({ where: { id: sale.id }, data: { paymentStatus: paidAmount.eq(totals.total) ? "PAID" : paidAmount.isZero() ? "UNPAID" : "PARTIALLY_PAID" } });
+      return tx.sale.findUniqueOrThrow({ where: { id: sale.id }, include: { items: { include: { product: { include: { unit: true } } } }, payments: true, coupon: true } });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },
     );
@@ -219,6 +267,13 @@ export async function createSale(input: any, attempt = 0) {
     if (isSerializationConflict && attempt < 4) {
       await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
       return createSale(input, attempt + 1);
+    }
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const existing = await prisma.sale.findUnique({ where: { idempotencyKey: input.idempotencyKey }, include: { items: { include: { product: { include: { unit: true } } } }, payments: true, coupon: true } });
+      if (existing) {
+        if (existing.requestHash !== requestHash) throw new ApiError(409, "This idempotency key was already used for a different sale");
+        return existing;
+      }
     }
     throw error;
   }
@@ -346,7 +401,7 @@ export async function createPurchase(input: any) {
           receivedAt: input.purchaseDate ?? new Date(), source: "PURCHASE", status: "ACTIVE",
         } });
         await tx.product.update({ where: { id: product.id }, data: {
-          currentStock: { increment: quantity }, purchaseRate: rate, sellingPrice: sellingRate,
+          currentStock: { increment: quantity }, purchaseRate: rate,
         } });
       }
       await applySupplierCredits(tx, purchase.supplierId);
