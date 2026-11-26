@@ -1,11 +1,12 @@
 import { Prisma } from "../../../generated/prisma/client.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { calculateInvoice, calculateLine } from "../../shared/money.js";
 import { validateQuantity } from "../../shared/quantity.js";
 import { purchaseCancellationBlockers } from "../purchases/purchase-eligibility.js";
 import { applySupplierCredits } from "../payments/supplier-credit.service.js";
+import { recordCustomerPaymentInTransaction } from "../payments/payment.service.js";
 
 const dec = (n: Prisma.Decimal | number | string) => new Prisma.Decimal(n);
 type SaleCancellationInput = {
@@ -17,6 +18,38 @@ type SaleCancellationInput = {
 };
 const invoiceDateKey = (date: Date) =>
   `${String(date.getUTCFullYear()).slice(-2)}${String(date.getUTCMonth() + 1).padStart(2, "0")}${String(date.getUTCDate()).padStart(2, "0")}`;
+const saleInclude = {
+  items: { include: { product: { include: { unit: true } } } },
+  payments: true,
+  coupon: true,
+} as const;
+const saleRequestHash = (input: any) => createHash("sha256").update(JSON.stringify({
+  customerId: input.customerId ?? null,
+  billDate: input.billDate ? new Date(input.billDate).toISOString() : null,
+  discountAmount: String(input.discountAmount ?? 0),
+  couponCode: input.couponCode ?? null,
+  couponPrice: String(input.couponPrice ?? 0),
+  creditBill: input.creditBill ? {
+    billNumber: input.creditBill.billNumber,
+    dueDate: new Date(input.creditBill.dueDate).toISOString(),
+    term: input.creditBill.term,
+  } : null,
+  items: input.items.map((item: any) => ({
+    productId: item.productId,
+    inventoryBatchId: item.inventoryBatchId,
+    quantity: String(item.quantity),
+    unitSellingPrice: item.unitSellingPrice == null ? null : String(item.unitSellingPrice),
+    discountAmount: String(item.discountAmount ?? 0),
+    displayQuantity: item.displayQuantity == null ? null : String(item.displayQuantity),
+    displayUnitName: item.displayUnitName ?? null,
+    displayUnitSymbol: item.displayUnitSymbol ?? null,
+  })),
+  paymentAllocations: (input.paymentAllocations ?? []).map((allocation: any) => ({
+    method: allocation.method,
+    amount: String(allocation.amount),
+    notes: allocation.notes ?? null,
+  })),
+})).digest("hex");
 
 function aggregateItems(
   items: Array<{
@@ -41,9 +74,23 @@ const totalDiscount = (rows: Array<{ discountAmount: number }>) =>
   rows.reduce((total, row) => total.add(dec(row.discountAmount)), dec(0));
 
 export async function createSale(input: any, attempt = 0) {
+  if (!Array.isArray(input.paymentAllocations))
+    throw new ApiError(400, "Payment allocations are required to create a sale");
   try {
     return await prisma.$transaction(
     async (tx) => {
+      const requestHash = saleRequestHash(input);
+      if (input.idempotencyKey) {
+        const existingSale = await tx.sale.findUnique({
+          where: { idempotencyKey: input.idempotencyKey },
+          include: saleInclude,
+        });
+        if (existingSale) {
+          if (existingSale.requestHash !== requestHash)
+            throw new ApiError(409, "This idempotency key was already used for a different sale");
+          return existingSale;
+        }
+      }
       const billDate = input.billDate ?? new Date();
       const dateKey = invoiceDateKey(billDate);
       const invoiceCounter = await tx.saleInvoiceCounter.upsert({
@@ -112,6 +159,7 @@ export async function createSale(input: any, attempt = 0) {
           unitSellingPrice: rate,
           batchSellingPriceSnapshot: batch.sellingRate,
           historicalCostSnapshot: batch.purchaseRate,
+          historicalMrpSnapshot: batch.mrp,
           costSnapshotSource: "VERIFIED_BATCH",
           discountAmount: calculated.discountAmount,
           lineTotal: calculated.total,
@@ -126,6 +174,10 @@ export async function createSale(input: any, attempt = 0) {
         });
       }
       const couponPrice = dec(input.couponPrice ?? 0);
+      if (input.couponCode) {
+        const existingCoupon = await tx.coupon.findUnique({ where: { code: input.couponCode }, select: { id: true } });
+        if (existingCoupon) throw new ApiError(409, "Coupon code has already been used");
+      }
       const invoiceDiscount = dec(input.discountAmount).add(couponPrice);
       let totals;
       try {
@@ -136,6 +188,28 @@ export async function createSale(input: any, attempt = 0) {
           "Invoice discount cannot exceed the remaining subtotal",
         );
       }
+      const paymentAllocations = input.paymentAllocations as Array<{ method: "CASH" | "UPI" | "COUPON" | "STORE_CREDIT" | "CREDIT"; amount: number | string; notes?: string }>;
+      let creditAmount = dec(0);
+      let allocatedTotal = dec(0);
+      for (const allocation of paymentAllocations) {
+        const allocationAmount = dec(allocation.amount).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+        if (allocationAmount.isNegative() || !allocationAmount.eq(allocation.amount))
+          throw new ApiError(400, "Payment amounts must be valid and support up to two decimal places");
+        allocatedTotal = allocatedTotal.add(allocationAmount);
+        if (allocation.method === "CREDIT") creditAmount = creditAmount.add(allocationAmount);
+      }
+      if (!allocatedTotal.eq(totals.total)) {
+        const difference = totals.total.sub(allocatedTotal).abs().toFixed(2);
+        throw new ApiError(400, allocatedTotal.lt(totals.total)
+          ? `Payment is short by ₹${difference}`
+          : `Payment exceeds the bill by ₹${difference}`);
+      }
+      if (creditAmount.gt(0) && (!input.customerId || !input.creditBill))
+        throw new ApiError(400, "A registered customer and credit bill details are required for the credit amount");
+      if (creditAmount.isZero() && input.creditBill)
+        throw new ApiError(400, "A credit bill cannot be created when no credit amount is allocated");
+      if (input.creditBill && !input.customerId)
+        throw new ApiError(400, "A customer is required for a credit bill");
       // Conditional decrement is atomic at the row level and prevents concurrent overselling.
       for (const [batchId, quantity] of quantityByBatch) {
         const batch = batchById.get(batchId)!;
@@ -166,6 +240,8 @@ export async function createSale(input: any, attempt = 0) {
       }
       const sale = await tx.sale.create({
         data: {
+          ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+          requestHash,
           invoiceNumber,
           customerId: input.customerId ?? null,
           billDate,
@@ -187,18 +263,12 @@ export async function createSale(input: any, attempt = 0) {
               }
             : {}),
         },
-        include: {
-          items: { include: { product: { include: { unit: true } } } },
-          payments: true,
-          coupon: true,
-        },
+        include: saleInclude,
       });
       if (input.creditBill) {
-        if (!sale.customerId)
-          throw new ApiError(400, "A customer is required for a credit bill");
         await tx.customerCreditBill.create({
           data: {
-            customerId: sale.customerId,
+            customerId: sale.customerId!,
             saleId: sale.id,
             billNumber: input.creditBill.billNumber,
             billDate: sale.billDate,
@@ -209,7 +279,20 @@ export async function createSale(input: any, attempt = 0) {
           },
         });
       }
-      return sale;
+      for (const allocation of paymentAllocations) {
+        if (allocation.method === "CREDIT" || dec(allocation.amount).isZero()) continue;
+        await recordCustomerPaymentInTransaction(tx, {
+          saleId: sale.id,
+          customerId: sale.customerId ?? undefined,
+          amount: allocation.amount,
+          method: allocation.method,
+          paymentDate: billDate,
+          notes: allocation.notes,
+        });
+      }
+      if (totals.total.isZero())
+        await tx.sale.update({ where: { id: sale.id }, data: { paymentStatus: "PAID" } });
+      return tx.sale.findUniqueOrThrow({ where: { id: sale.id }, include: saleInclude });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },
     );
@@ -219,6 +302,19 @@ export async function createSale(input: any, attempt = 0) {
     if (isSerializationConflict && attempt < 4) {
       await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
       return createSale(input, attempt + 1);
+    }
+    const isIdempotencyConflict =
+      error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002" && input.idempotencyKey;
+    if (isIdempotencyConflict) {
+      const existingSale = await prisma.sale.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+        include: saleInclude,
+      });
+      if (existingSale) {
+        if (existingSale.requestHash !== saleRequestHash(input))
+          throw new ApiError(409, "This idempotency key was already used for a different sale");
+        return existingSale;
+      }
     }
     throw error;
   }
@@ -343,6 +439,7 @@ export async function createPurchase(input: any) {
           label: null,
           receivedQuantity: quantity, remainingQuantity: quantity,
           purchaseRate: rate, sellingRate,
+          mrp: row.mrp ?? null,
           receivedAt: input.purchaseDate ?? new Date(), source: "PURCHASE", status: "ACTIVE",
         } });
         await tx.product.update({ where: { id: product.id }, data: {

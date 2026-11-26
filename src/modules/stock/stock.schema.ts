@@ -28,6 +28,7 @@ export const adjustmentSchema = z
     inventoryBatchId: z.uuid().optional(),
     purchaseRate: positiveRate.optional(),
     sellingRate: positiveRate.optional(),
+    mrp: z.union([positiveRate, z.null()]).optional(),
     reason: z.string().trim().max(200).optional().default(""),
     notes: z.string().trim().max(1000).optional().nullable(),
   })
@@ -47,6 +48,8 @@ export const adjustmentSchema = z
             message: `${field === "purchaseRate" ? "Purchase" : "Selling"} rate must be greater than zero`,
           });
       }
+      if (value.mrp != null && value.sellingRate !== undefined && value.mrp <= value.sellingRate)
+        context.addIssue({ code: "custom", path: ["mrp"], message: "MRP must be greater than the batch selling rate" });
     } else {
       if (!value.inventoryBatchId)
         context.addIssue({
@@ -54,7 +57,7 @@ export const adjustmentSchema = z
           path: ["inventoryBatchId"],
           message: "Select the batch whose stock is being reduced",
         });
-      if (value.purchaseRate !== undefined || value.sellingRate !== undefined)
+      if (value.purchaseRate !== undefined || value.sellingRate !== undefined || value.mrp !== undefined)
         context.addIssue({
           code: "custom",
           path: ["purchaseRate"],

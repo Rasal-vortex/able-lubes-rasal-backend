@@ -28,6 +28,12 @@ export const purchaseSerializer = (purchase: any) => ({
   items: purchase.items?.map((item: any) => ({
     ...item,
     quantity: item.quantity.toString(),
+    inventoryBatch: item.inventoryBatch ? {
+      ...item.inventoryBatch,
+      purchaseRate: item.inventoryBatch.purchaseRate.toString(),
+      sellingRate: item.inventoryBatch.sellingRate.toString(),
+      mrp: item.inventoryBatch.mrp?.toString() ?? null,
+    } : null,
     unitId: item.product?.unit?.id,
     unitName: item.unitNameSnapshot ?? item.product?.unit?.name,
     unitSymbol: item.unitSymbolSnapshot ?? item.product?.unit?.symbol ?? null,

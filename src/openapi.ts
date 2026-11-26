@@ -230,10 +230,8 @@ export const openApiDocument = {
     },
     "/sales": {
       post: {
-        summary:
-          "Post sale with optional per-item selling prices, optional coupon, and inventory deduction",
-        description:
-          "Each sale item may provide unitSellingPrice. When omitted, the product's current selling price is used. Provide creditBill metadata for customer credit sales so they remain listed after reload.",
+        summary: "Post a sale, discount, payment allocations, and stock deduction atomically",
+        description: "The server calculates the final invoice amount from sold item rates, quantity, manual discountAmount, and couponPrice. paymentAllocations and idempotencyKey are required; allocations must reconcile exactly to the calculated total. CREDIT is the unpaid customer balance, not a received-payment record. Payment rows and Store Credit debits are committed with the sale and stock updates. Retries with the same idempotencyKey return the original invoice without recording tenders twice. Provide creditBill metadata when a CREDIT allocation is present.",
         security: [{ bearerAuth: [] }],
         responses: {
           "201": { description: "Posted invoice" },
