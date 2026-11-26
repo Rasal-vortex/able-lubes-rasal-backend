@@ -16,6 +16,8 @@ export const productSerializer = (p: any) => ({
     purchaseRate: batch.purchaseRate.toString(),
     sellingRate: batch.sellingRate.toString(),
     mrp: batch.mrp?.toString() ?? null,
+    isDefaultSellingRate: batch.isDefaultSellingRate,
+    receivedQuantity: batch.receivedQuantity.toString(),
     remainingQuantity: batch.remainingQuantity.toString(),
     receivedAt: batch.receivedAt,
     source: batch.source,

@@ -4,96 +4,112 @@ import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { paymentModel } from "./payment.model.js";
 import { paymentSerializer } from "./payment.serializer.js";
-const amount = (value: number | string) => new Prisma.Decimal(value);
-
-export async function recordCustomerPaymentInTransaction(tx: any, input: any) {
-  const sale = await paymentModel.sale(input.saleId, tx);
-  if (!sale || sale.status !== "POSTED")
-    throw new ApiError(404, "Posted sale not found");
-  if (input.customerId && sale.customerId !== input.customerId)
-    throw new ApiError(400, "Payment customer must match the invoice customer");
-  const payments = await paymentModel.salePayments(sale.id, tx);
-  const outstanding = sale.totalAmount.sub(
-    payments._sum.amount ?? amount(0),
-  );
-  const paymentAmount = amount(input.amount);
-  if (paymentAmount.gt(outstanding))
-    throw new ApiError(400, "Payment exceeds the invoice outstanding amount");
-
-  let paymentNotes = input.notes;
-  if (input.method === "STORE_CREDIT") {
-    if (!sale.customerId)
-      throw new ApiError(400, "Store credit requires a registered customer");
-    const balances = await tx.customerStoreCreditTransaction.groupBy({
-      by: ["type"],
-      where: { customerId: sale.customerId },
-      _sum: { amount: true },
-    });
-    const available = balances.reduce(
-      (balance: Prisma.Decimal, row: any) => balance.add(
-        row.type === "CREDIT"
-          ? row._sum.amount ?? amount(0)
-          : (row._sum.amount ?? amount(0)).neg(),
-      ),
-      amount(0),
-    );
-    if (paymentAmount.gt(available))
-      throw new ApiError(400, "Store credit exceeds the customer's available balance");
-  }
-  if (input.method === "COUPON") {
-    const couponCode = /^Coupon code: (.+)$/.exec(input.notes ?? "")?.[1];
-    if (couponCode) {
-      const recordedCoupon = await tx.coupon.findUnique({
-        where: { code: couponCode },
-        select: { id: true },
-      });
-      if (recordedCoupon)
-        throw new ApiError(409, "Use an unrecorded coupon code for a split sale payment");
-      const priorRedemption = await tx.customerPayment.findFirst({
-        where: { method: "COUPON", notes: `Coupon code: ${couponCode}` },
-        select: { id: true },
-      });
-      if (priorRedemption)
-        throw new ApiError(409, "This coupon code has already been used");
-    } else {
-      // Keep code-less coupon value distinct from code-based coupon redemptions.
-      paymentNotes = "Coupon payment (no code)";
-    }
-  }
-  const payment = await paymentModel.createCustomerPayment(
-    {
-      ...input,
-      customerId: sale.customerId,
-      paymentDate: input.paymentDate ?? new Date(),
-      amount: paymentAmount,
-      notes: paymentNotes,
-    },
-    tx,
-  );
-  if (input.method === "STORE_CREDIT") {
-    await tx.customerStoreCreditTransaction.create({
-      data: {
-        customerId: sale.customerId!,
-        type: "DEBIT",
-        amount: paymentAmount,
-        saleId: sale.id,
-        paymentId: payment.id,
-      },
-    });
-  }
-  await paymentModel.setSalePaymentStatus(
-    sale.id,
-    paymentAmount.eq(outstanding) ? "PAID" : "PARTIALLY_PAID",
-    tx,
-  );
-  return paymentSerializer(payment);
-}
+const amount = (value: Prisma.Decimal | number | string) => new Prisma.Decimal(value);
 
 export async function recordCustomerPayment(input: any) {
-  return prisma.$transaction(
-    (tx) => recordCustomerPaymentInTransaction(tx, input),
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-  );
+  const resolveIdempotentPayment = async (payment: any) => {
+    if (!payment) return null;
+    const matches =
+      payment.saleId === input.saleId &&
+      payment.customerId === (input.customerId ?? payment.customerId) &&
+      payment.method === input.method &&
+      amount(payment.amount).eq(amount(input.amount));
+    if (!matches) throw new ApiError(409, "This payment request key was already used for different payment details");
+    return paymentSerializer(payment);
+  };
+
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        if (input.idempotencyKey) {
+          const prior = await tx.customerPayment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+          const resolved = await resolveIdempotentPayment(prior);
+          if (resolved) return resolved;
+        }
+        const sale = await paymentModel.sale(input.saleId, tx);
+      if (!sale || sale.status !== "POSTED")
+        throw new ApiError(404, "Posted sale not found");
+      if (input.customerId && sale.customerId !== input.customerId)
+        throw new ApiError(
+          400,
+          "Payment customer must match the invoice customer",
+        );
+      const payments = await paymentModel.salePayments(sale.id, tx);
+      const outstanding = sale.totalAmount.sub(
+        payments._sum.amount ?? amount(0),
+      );
+      const paymentAmount = amount(input.amount);
+      if (paymentAmount.gt(outstanding))
+        throw new ApiError(
+          400,
+          "Payment exceeds the invoice outstanding amount",
+        );
+      let paymentNotes = input.notes;
+      if (input.method === "STORE_CREDIT") {
+        if (!sale.customerId) throw new ApiError(400, "Store credit requires a registered customer");
+        const balances = await tx.customerStoreCreditTransaction.groupBy({
+          by: ["type"],
+          where: { customerId: sale.customerId },
+          _sum: { amount: true },
+        });
+        const available = balances.reduce((balance, row) => balance.add(row.type === "CREDIT" ? row._sum.amount ?? amount(0) : (row._sum.amount ?? amount(0)).neg()), amount(0));
+        if (paymentAmount.gt(available)) throw new ApiError(400, "Store credit exceeds the customer's available balance");
+      }
+      if (input.method === "COUPON") {
+        const couponCode = /^Coupon code: (.+)$/.exec(input.notes ?? "")?.[1];
+        if (couponCode) {
+          const recordedCoupon = await tx.coupon.findUnique({
+            where: { code: couponCode },
+            select: { id: true },
+          });
+          if (recordedCoupon)
+            throw new ApiError(
+              409,
+              "Use an unrecorded coupon code for a split sale payment",
+            );
+          const priorRedemption = await tx.customerPayment.findFirst({
+            where: { method: "COUPON", notes: `Coupon code: ${couponCode}` },
+            select: { id: true },
+          });
+          if (priorRedemption)
+            throw new ApiError(409, "This coupon code has already been used");
+        } else {
+          // Keep code-less coupon value distinct from code-based coupon redemptions.
+          paymentNotes = "Coupon payment (no code)";
+        }
+      }
+      const payment = await paymentModel.createCustomerPayment(
+        {
+          ...input,
+          customerId: sale.customerId,
+          paymentDate: input.paymentDate ?? new Date(),
+          amount: paymentAmount,
+          notes: paymentNotes,
+        },
+        tx,
+      );
+      if (input.method === "STORE_CREDIT") {
+        await tx.customerStoreCreditTransaction.create({
+          data: { customerId: sale.customerId!, type: "DEBIT", amount: paymentAmount, saleId: sale.id, paymentId: payment.id },
+        });
+      }
+      await paymentModel.setSalePaymentStatus(
+        sale.id,
+        paymentAmount.eq(outstanding) ? "PAID" : "PARTIALLY_PAID",
+        tx,
+      );
+      return paymentSerializer(payment);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (error) {
+    if (input.idempotencyKey && error instanceof Prisma.PrismaClientKnownRequestError && ["P2002", "P2034"].includes(error.code)) {
+      const prior = await prisma.customerPayment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+      const resolved = await resolveIdempotentPayment(prior);
+      if (resolved) return resolved;
+    }
+    throw error;
+  }
 }
 
 export async function recordSupplierPayment(input: any) {

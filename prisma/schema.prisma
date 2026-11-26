@@ -309,7 +309,6 @@ model SaleItem {
   discountAmount             Decimal  @default(0) @map("discount_amount") @db.Decimal(12, 2)
   lineTotal                  Decimal  @map("line_total") @db.Decimal(12, 2)
   historicalCostSnapshot     Decimal? @map("historical_cost_snapshot") @db.Decimal(12, 2)
-  historicalMrpSnapshot      Decimal? @map("historical_mrp_snapshot") @db.Decimal(12, 2)
   batchSellingPriceSnapshot  Decimal? @map("batch_selling_price_snapshot") @db.Decimal(12, 2)
   costSnapshotSource         SaleCostSource? @map("cost_snapshot_source")
   unitNameSnapshot           String   @map("unit_name_snapshot")
@@ -325,6 +324,7 @@ model SaleItem {
 
 model CustomerPayment {
   id          String        @id @default(uuid()) @db.Uuid
+  idempotencyKey String?    @unique @map("idempotency_key") @db.Uuid
   customerId  String?       @map("customer_id") @db.Uuid
   customer    Customer?     @relation(fields: [customerId], references: [id], onDelete: Restrict)
   saleId      String?       @map("sale_id") @db.Uuid
@@ -356,6 +356,7 @@ model SaleCancellation {
   pendingAmount   Decimal     @default(0) @map("pending_amount") @db.Decimal(12, 2)
   refunds         SaleRefund[]
   paymentCorrections SalePaymentCorrection[]
+  storeCreditRestorations CustomerStoreCreditTransaction[]
 
   @@index([cancelledAt])
   @@index([cancelledById])
@@ -467,10 +468,16 @@ model CustomerStoreCreditTransaction {
   sale          Sale?                   @relation(fields: [saleId], references: [id], onDelete: Restrict)
   paymentId     String?                 @unique @map("payment_id") @db.Uuid
   payment       CustomerPayment?        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  cancellationId String?                @map("cancellation_id") @db.Uuid
+  cancellation  SaleCancellation?       @relation(fields: [cancellationId], references: [id], onDelete: Restrict)
+  reversalOfTransactionId String?        @unique @map("reversal_of_transaction_id") @db.Uuid
+  reversalOfTransaction CustomerStoreCreditTransaction? @relation("CustomerStoreCreditReversals", fields: [reversalOfTransactionId], references: [id], onDelete: Restrict)
+  reversedBy CustomerStoreCreditTransaction? @relation("CustomerStoreCreditReversals")
   createdAt     DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@index([customerId, createdAt])
   @@index([saleId])
+  @@index([cancellationId])
   @@map("customer_store_credit_transactions")
 }
 
@@ -564,6 +571,7 @@ model InventoryBatch {
   purchaseRate      Decimal              @map("purchase_rate") @db.Decimal(12, 2)
   sellingRate       Decimal              @map("selling_rate") @db.Decimal(12, 2)
   mrp               Decimal?             @db.Decimal(12, 2)
+  isDefaultSellingRate Boolean            @default(false) @map("is_default_selling_rate")
   receivedAt        DateTime             @map("received_at") @db.Timestamptz(3)
   source            InventoryBatchSource
   status            InventoryBatchStatus @default(ACTIVE)

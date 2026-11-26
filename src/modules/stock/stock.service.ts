@@ -35,7 +35,6 @@ export async function createAdjustment(input: any, userId: string) {
             remainingQuantity: quantity,
             purchaseRate: dec(input.purchaseRate),
             sellingRate: dec(input.sellingRate),
-            mrp: input.mrp ?? null,
             receivedAt: new Date(),
             source: "ADJUSTMENT",
             status: "ACTIVE",
@@ -129,14 +128,6 @@ export async function createAdjustment(input: any, userId: string) {
       });
       return {
         ...movement,
-        inventoryBatch: movement.inventoryBatch ? {
-          ...movement.inventoryBatch,
-          purchaseRate: movement.inventoryBatch.purchaseRate.toString(),
-          sellingRate: movement.inventoryBatch.sellingRate.toString(),
-          mrp: movement.inventoryBatch.mrp?.toString() ?? null,
-          receivedQuantity: movement.inventoryBatch.receivedQuantity.toString(),
-          remainingQuantity: movement.inventoryBatch.remainingQuantity.toString(),
-        } : null,
         unitId: product.unitId,
         unitName: product.unit.name,
         unitSymbol: product.unit.symbol,
@@ -179,14 +170,6 @@ export async function listMovements(q: any) {
         currentStock: m.product.currentStock.toString(),
         unit: m.product.unit.symbol || m.product.unit.name,
       },
-      inventoryBatch: m.inventoryBatch ? {
-        ...m.inventoryBatch,
-        purchaseRate: m.inventoryBatch.purchaseRate.toString(),
-        sellingRate: m.inventoryBatch.sellingRate.toString(),
-        mrp: m.inventoryBatch.mrp?.toString() ?? null,
-        receivedQuantity: m.inventoryBatch.receivedQuantity.toString(),
-        remainingQuantity: m.inventoryBatch.remainingQuantity.toString(),
-      } : null,
     })),
     meta: pageMeta(q.page, q.limit, total),
   };

@@ -48,7 +48,6 @@ function serializeSale(sale: any) {
       discountAmount: item.discountAmount.toString(),
       lineTotal: item.lineTotal.toString(),
       historicalCostSnapshot: item.historicalCostSnapshot?.toString() ?? item.inventoryBatch?.purchaseRate.toString() ?? null,
-      historicalMrpSnapshot: item.historicalMrpSnapshot?.toString() ?? null,
       returnedQuantity: returnedQuantity.toString(),
       returnedAmount: item.returns.reduce((total: Prisma.Decimal, row: any) => total.add(row.amount), dec(0)).toString(),
       returnedDisplayQuantity: returnedDisplayQuantity?.toString() ?? null,

@@ -160,9 +160,8 @@ export async function dailySales(date: string) {
   for (const sale of billedSales) {
     const lineRevenueTotal = sale.items.reduce((sum, item) => sum.add(item.lineTotal), decimal(0));
     const paymentDerivedSale = bySale.get(sale.id);
-    const invoicePayments = sale.payments.map((payment) => ({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes }));
     const paymentsById = new Map<string, any>();
-    for (const payment of [...(paymentDerivedSale?.payments ?? []), ...invoicePayments])
+    for (const payment of [...(paymentDerivedSale?.payments ?? []), ...sale.payments.map((payment) => ({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes }))])
       paymentsById.set(payment.id, payment);
     bySale.set(sale.id, {
       ...paymentDerivedSale,
@@ -232,10 +231,8 @@ export async function dailySales(date: string) {
         verifiedByMethod.set(payment.method, (verifiedByMethod.get(payment.method) ?? decimal(0)).add(verifiedAmount));
     }
     for (const [method, amount] of verifiedByMethod) {
-      if (method === "CASH" || method === "UPI") {
-        collected = collected.add(amount);
-        byMethod.set(method, (byMethod.get(method) ?? decimal(0)).add(amount));
-      }
+      collected = collected.add(amount);
+      byMethod.set(method, (byMethod.get(method) ?? decimal(0)).add(amount));
     }
     creditCancellations.push({
       id: cancellation.id,
@@ -272,22 +269,10 @@ export async function dailySales(date: string) {
       byMethod: [...byMethod.entries()].map(([method, amount]) => ({ method, amount: amount.toFixed(2) })),
     },
     invoices: [...bySale.values()].map((sale) => {
-      const paymentsReceived = sale.payments
-        .filter((payment: any) => payment.method === "CASH" || payment.method === "UPI")
-        .reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
-      const allocatedPayments = sale.payments.reduce(
-        (total: Prisma.Decimal, payment: any) => total.add(payment.amount),
-        decimal(0),
-      );
-      const isInvoiceDay = bucketDate(sale.billDate) === date;
-      const creditAmount = isInvoiceDay
-        ? Prisma.Decimal.max(decimal(0), decimal(sale.totalAmount).sub(allocatedPayments))
-        : decimal(0);
-      return {
-        ...sale,
-        paymentsReceived: paymentsReceived.toFixed(2),
-        creditAmount: creditAmount.toFixed(2),
-      };
+      const paymentsReceived = sale.payments.filter((payment: any) => payment.method === "CASH" || payment.method === "UPI").reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
+      const allocatedPayments = sale.payments.reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
+      const creditAmount = bucketDate(sale.billDate) === date ? Prisma.Decimal.max(decimal(0), decimal(sale.totalAmount).sub(allocatedPayments)) : decimal(0);
+      return { ...sale, paymentsReceived: paymentsReceived.toFixed(2), creditAmount: creditAmount.toFixed(2) };
     }),
     paymentCorrections,
     creditCancellations,

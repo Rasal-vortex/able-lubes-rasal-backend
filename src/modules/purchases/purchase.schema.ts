@@ -16,13 +16,6 @@ const purchaseLineSchema = z.object({
     ),
   supplierRate: z.coerce.number().finite().min(0.01).max(9999999999.99),
   sellingRate: z.coerce.number().finite().min(0.01).max(9999999999.99),
-  mrp: z.union([
-    z.coerce.number().finite().min(0.01).max(9999999999.99),
-    z.null(),
-  ]).optional(),
-}).refine((line) => line.mrp == null || line.mrp > line.sellingRate, {
-  message: "MRP must be greater than the batch selling rate",
-  path: ["mrp"],
 });
 export const createPurchaseSchema = z.object({
   idempotencyKey: z.uuid(),

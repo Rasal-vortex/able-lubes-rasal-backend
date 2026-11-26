@@ -17,5 +17,5 @@ export const create = async (req: Request, res: Response) =>
 export const update = async (req: Request, res: Response) =>
   res.json({
     success: true,
-    data: await service.updateProduct(req.params.id as string, req.body, req.user!.role, req.user!.id),
+    data: await service.updateProduct(req.params.id as string, req.body, req.user!.id, req.user!.role),
   });
