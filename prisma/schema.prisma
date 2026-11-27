@@ -256,6 +256,7 @@ model Sale {
   totalAmount    Decimal       @map("total_amount") @db.Decimal(12, 2)
   status         SaleStatus    @default(DRAFT)
   paymentStatus  PaymentStatus @default(UNPAID) @map("payment_status")
+  settledAt      DateTime?     @map("settled_at") @db.Timestamptz(3)
   returnStatus   SalesReturnStatus @default(NONE) @map("return_status")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
@@ -270,6 +271,7 @@ model Sale {
 
   @@index([customerId, billDate])
   @@index([status, billDate])
+  @@index([settledAt])
   @@map("sales")
 }
 

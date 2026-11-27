@@ -256,7 +256,11 @@ export async function createSale(input: any, attempt = 0) {
         if (allocation.method === "STORE_CREDIT") await tx.customerStoreCreditTransaction.create({ data: { customerId: sale.customerId!, type: "DEBIT", amount: value, saleId: sale.id, paymentId: payment.id } });
       }
       const paidAmount = allocations.filter((allocation) => allocation.method !== "CREDIT").reduce((total, allocation) => total.add(dec(allocation.amount)), dec(0));
-      await tx.sale.update({ where: { id: sale.id }, data: { paymentStatus: paidAmount.eq(totals.total) ? "PAID" : paidAmount.isZero() ? "UNPAID" : "PARTIALLY_PAID" } });
+      const fullyPaidAtSale = paidAmount.eq(totals.total);
+      await tx.sale.update({ where: { id: sale.id }, data: {
+        paymentStatus: fullyPaidAtSale ? "PAID" : paidAmount.isZero() ? "UNPAID" : "PARTIALLY_PAID",
+        settledAt: fullyPaidAtSale ? billDate : null,
+      } });
       return tx.sale.findUniqueOrThrow({ where: { id: sale.id }, include: { items: { include: { product: { include: { unit: true } } } }, payments: true, coupon: true } });
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },

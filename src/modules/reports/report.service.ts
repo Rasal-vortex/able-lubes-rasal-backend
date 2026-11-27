@@ -149,8 +149,11 @@ export async function dailySales(date: string) {
         returnedQuantity: item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0)).toString(),
       })),
       payments: [],
+      paymentsOnDate: [],
     };
-    bill.payments.push({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes });
+    const dailyPayment = { id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes };
+    bill.payments.push(dailyPayment);
+    bill.paymentsOnDate.push(dailyPayment);
     bySale.set(sale.id, bill);
     if (payment.method === "CASH" || payment.method === "UPI") {
       collected = collected.add(payment.amount);
@@ -163,6 +166,12 @@ export async function dailySales(date: string) {
     const paymentsById = new Map<string, any>();
     for (const payment of [...(paymentDerivedSale?.payments ?? []), ...sale.payments.map((payment) => ({ id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes }))])
       paymentsById.set(payment.id, payment);
+    const paymentsOnDateById = new Map<string, any>();
+    for (const payment of paymentDerivedSale?.paymentsOnDate ?? []) paymentsOnDateById.set(payment.id, payment);
+    for (const payment of sale.payments) {
+      if (bucketDate(payment.paymentDate) === date)
+        paymentsOnDateById.set(payment.id, { id: payment.id, method: payment.method, amount: payment.amount.toFixed(2), date: payment.paymentDate, notes: payment.notes });
+    }
     bySale.set(sale.id, {
       ...paymentDerivedSale,
       id: sale.id,
@@ -192,6 +201,7 @@ export async function dailySales(date: string) {
         returnedAmount: item.returns.reduce((sum, row) => sum.add(row.amount), decimal(0)).toFixed(2),
       })),
       payments: [...paymentsById.values()],
+      paymentsOnDate: [...paymentsOnDateById.values()],
       lineRevenueTotal: lineRevenueTotal.toFixed(2),
     });
   }
@@ -269,10 +279,10 @@ export async function dailySales(date: string) {
       byMethod: [...byMethod.entries()].map(([method, amount]) => ({ method, amount: amount.toFixed(2) })),
     },
     invoices: [...bySale.values()].map((sale) => {
-      const paymentsReceived = sale.payments.filter((payment: any) => payment.method === "CASH" || payment.method === "UPI").reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
-      const allocatedPayments = sale.payments.reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
+      const paymentsReceived = sale.paymentsOnDate.filter((payment: any) => payment.method === "CASH" || payment.method === "UPI").reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
+      const allocatedPayments = sale.paymentsOnDate.reduce((total: Prisma.Decimal, payment: any) => total.add(payment.amount), decimal(0));
       const creditAmount = bucketDate(sale.billDate) === date ? Prisma.Decimal.max(decimal(0), decimal(sale.totalAmount).sub(allocatedPayments)) : decimal(0);
-      return { ...sale, paymentsReceived: paymentsReceived.toFixed(2), creditAmount: creditAmount.toFixed(2) };
+      return { ...sale, isSaleDate: bucketDate(sale.billDate) === date, paymentsReceived: paymentsReceived.toFixed(2), creditAmount: creditAmount.toFixed(2) };
     }),
     paymentCorrections,
     creditCancellations,
@@ -311,52 +321,108 @@ export async function dailySales(date: string) {
 }
 
 export async function profitReport(from: Date, to: Date) {
-  const [rows, returns] = await Promise.all([reportModel.sales(from, to), reportModel.salesReturns(from, to)]);
+  const [rows, returns] = await Promise.all([reportModel.sales(from, to, true), reportModel.salesReturns(from, to)]);
   const expenses = await reportModel.expenses(from, to);
-  const netSales = decimal(sum(rows.map((row) => row.totalAmount))).sub(sum(returns.map((row) => row.amount)));
-  let totalProfit = decimal(0);
-  const invoices = rows.map((sale) => {
+  const dailyBuckets = new Map<string, { grossProfit: Prisma.Decimal; expenses: Prisma.Decimal }>();
+  let recognizedRevenue = decimal(0);
+  const getBucket = (date: Date) => {
+    const key = bucketDate(date);
+    const bucket = dailyBuckets.get(key) ?? { grossProfit: decimal(0), expenses: decimal(0) };
+    dailyBuckets.set(key, bucket);
+    return bucket;
+  };
+  const recognitionDate = (sale: { settledAt: Date | null; billDate: Date; creditBill: { id: string } | null }) =>
+    sale.settledAt ?? (sale.creditBill ? null : sale.billDate);
+  const invoices = rows.flatMap((sale) => {
+    const settledAt = recognitionDate(sale);
+    if (!settledAt || settledAt < from || settledAt > to) return [];
     const lineRevenueTotal = sale.items.reduce((value, item) => value.add(item.lineTotal), decimal(0));
-    const items = sale.items.map((item) => {
+    let allocatedSaleAmount = decimal(0);
+    const items = sale.items.map((item, index) => {
       const costRate = item.historicalCostSnapshot ?? item.inventoryBatch?.purchaseRate ?? item.product.purchaseRate;
       const costBasis = item.costSnapshotSource ??
         (item.inventoryBatch ? "VERIFIED_BATCH" : "LEGACY_ESTIMATE");
-      const cost = costRate.mul(item.quantity);
+      const cost = costRate.mul(item.quantity).toDecimalPlaces(2);
       // Allocate invoice-level discounts proportionally so item profit sums to
       // the actual billed total, while line discounts are already in lineTotal.
-      const saleAmount = lineRevenueTotal.gt(0)
+      const allocatedAmount = lineRevenueTotal.gt(0)
         ? sale.totalAmount.mul(item.lineTotal).div(lineRevenueTotal)
         : item.lineTotal;
-      const itemReturns = item.returns.reduce((total, salesReturn) => total.add(salesReturn.amount), decimal(0));
-      const itemReturnedCost = item.returns.reduce((total, salesReturn) => total.add(salesReturn.costAmount), decimal(0));
-      const netItemRevenue = saleAmount.sub(itemReturns);
-      const netItemCost = cost.sub(itemReturnedCost);
-      const profit = netItemRevenue.sub(netItemCost);
-      totalProfit = totalProfit.add(saleAmount.sub(cost));
+      // Keep proportional discount allocation in cents and put any rounding remainder on the last line.
+      const saleAmount = lineRevenueTotal.gt(0) && index === sale.items.length - 1
+        ? sale.totalAmount.sub(allocatedSaleAmount)
+        : allocatedAmount.toDecimalPlaces(2);
+      allocatedSaleAmount = allocatedSaleAmount.add(saleAmount);
+      const priorReturns = (item.returns ?? []).filter((salesReturn) => salesReturn.salesReturn.returnedAt <= settledAt);
+      const returnedAmount = priorReturns.reduce((total, salesReturn) => total.add(salesReturn.amount), decimal(0));
+      const returnedCost = priorReturns.reduce((total, salesReturn) => total.add(salesReturn.costAmount), decimal(0));
+      const returnedQuantity = priorReturns.reduce((total, salesReturn) => total.add(salesReturn.quantity), decimal(0));
+      const recognizedSaleAmount = Prisma.Decimal.max(decimal(0), saleAmount.sub(returnedAmount));
+      const recognizedCost = Prisma.Decimal.max(decimal(0), cost.sub(returnedCost));
+      const profit = recognizedSaleAmount.sub(recognizedCost);
+      recognizedRevenue = recognizedRevenue.add(recognizedSaleAmount);
+      getBucket(settledAt).grossProfit = getBucket(settledAt).grossProfit.add(profit);
       return {
         productId: item.product.id,
         productName: item.product.name,
-        quantity: Prisma.Decimal.max(decimal(0), item.quantity.sub(item.returns.reduce((total, salesReturn) => total.add(salesReturn.quantity), decimal(0)))).toString(),
-        saleAmount: Prisma.Decimal.max(decimal(0), netItemRevenue).toFixed(2),
+        quantity: Prisma.Decimal.max(decimal(0), item.quantity.sub(returnedQuantity)).toString(),
+        saleAmount: recognizedSaleAmount.toFixed(2),
         purchaseRate: costRate.toFixed(2),
         costBasis,
-        cost: Prisma.Decimal.max(decimal(0), netItemCost).toFixed(2),
+        cost: recognizedCost.toFixed(2),
         profit: profit.toFixed(2),
       };
     });
-    return { invoiceNumber: sale.invoiceNumber, date: sale.billDate, items };
+    return items.some((item) => Number(item.saleAmount) > 0)
+      ? [{ invoiceNumber: sale.invoiceNumber, date: settledAt, items }]
+      : [];
   });
-  const totalExpenses = decimal(sum(expenses.map((row) => row.amount)));
-  const returnedProfit = returns.reduce((total, row) => total.add(row.amount).sub(row.items.reduce((cost, item) => cost.add(item.costAmount), decimal(0))), decimal(0));
-  totalProfit = totalProfit.sub(returnedProfit);
+  const returnEvents = returns.flatMap((salesReturn) => {
+    const saleRecognizedAt = recognitionDate(salesReturn.sale);
+    if (!saleRecognizedAt || salesReturn.returnedAt <= saleRecognizedAt) return [];
+    const items = salesReturn.items.map((item) => {
+      const saleItem = item.saleItem;
+      const costRate = saleItem.historicalCostSnapshot ?? saleItem.inventoryBatch?.purchaseRate ?? saleItem.product.purchaseRate;
+      const costBasis = saleItem.costSnapshotSource ??
+        (saleItem.inventoryBatch ? "VERIFIED_BATCH" : "LEGACY_ESTIMATE");
+      const profitReversal = item.amount.sub(item.costAmount);
+      getBucket(salesReturn.returnedAt).grossProfit = getBucket(salesReturn.returnedAt).grossProfit.sub(profitReversal);
+      return {
+        productId: saleItem.product.id,
+        productName: `Return · ${saleItem.product.name}`,
+        quantity: item.quantity.negated().toString(),
+        saleAmount: item.amount.negated().toFixed(2),
+        purchaseRate: item.quantity.isZero() ? costRate.toFixed(2) : item.costAmount.div(item.quantity).toFixed(2),
+        costBasis,
+        cost: item.costAmount.negated().toFixed(2),
+        profit: profitReversal.negated().toFixed(2),
+      };
+    });
+    recognizedRevenue = recognizedRevenue.sub(salesReturn.amount);
+    return [{ invoiceNumber: salesReturn.sale.invoiceNumber, date: salesReturn.returnedAt, items }];
+  });
+  for (const expense of expenses) {
+    getBucket(expense.expenseDate).expenses = getBucket(expense.expenseDate).expenses.add(expense.amount);
+  }
+  const daily = [...dailyBuckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, bucket]) => {
+    const grossProfit = bucket.grossProfit.toDecimalPlaces(2);
+    const dayExpenses = bucket.expenses.toDecimalPlaces(2);
+    return { date, grossProfit: grossProfit.toFixed(2), expenses: dayExpenses.toFixed(2), netProfit: grossProfit.sub(dayExpenses).toFixed(2) };
+  });
+  // Use the same rounded daily values as the Daily Summary so its rows reconcile exactly to the card.
+  const totalProfit = daily.reduce((total, row) => total.add(row.grossProfit), decimal(0));
+  const totalExpenses = daily.reduce((total, row) => total.add(row.expenses), decimal(0));
+  const finalProfit = daily.reduce((total, row) => total.add(row.netProfit), decimal(0));
   return {
     totals: {
-      netSales: netSales.toFixed(2),
+      netSales: recognizedRevenue.toFixed(2),
       totalProfit: totalProfit.toFixed(2),
       totalExpenses: totalExpenses.toFixed(2),
-      finalProfit: totalProfit.sub(totalExpenses).toFixed(2),
+      finalProfit: finalProfit.toFixed(2),
     },
     invoices,
+    returns: returnEvents,
+    daily,
   };
 }
 
@@ -466,17 +532,48 @@ export async function supplierLedger(id: string) {
 }
 export async function purchaseReport(from: Date, to: Date) {
   const [rows, cancellations] = await Promise.all([reportModel.purchases(from, to), reportModel.purchaseCancellations(from, to)]);
-  const activeRows = rows.filter((row) => row.status === "POSTED");
+  const grossPurchases = sum(rows.map((row) => row.totalAmount));
   const cancelledAmount = sum(cancellations.map((row) => row.purchase.totalAmount));
-  const purchaseTotal = sum(activeRows.map((row) => row.totalAmount));
+  const events = [
+    ...rows.map((row) => ({
+      eventType: "PURCHASE" as const,
+      date: row.purchaseDate,
+      purchaseDate: row.purchaseDate,
+      cancellationDate: row.cancellation?.cancelledAt ?? null,
+      purchaseId: row.id,
+      purchaseNumber: row.supplierInvoiceNumber || row.purchaseNumber,
+      supplierName: row.supplier.name,
+      originalAmount: row.totalAmount.toFixed(2),
+      cancellationAmount: "0.00",
+      netAmount: row.totalAmount.toFixed(2),
+      status: row.status,
+    })),
+    ...cancellations.map((row) => ({
+      eventType: "CANCELLATION" as const,
+      date: row.cancelledAt,
+      purchaseDate: row.purchase.purchaseDate,
+      cancellationDate: row.cancelledAt,
+      purchaseId: row.purchase.id,
+      purchaseNumber: row.purchase.supplierInvoiceNumber || row.purchase.purchaseNumber,
+      supplierName: row.purchase.supplier.name,
+      originalAmount: null,
+      cancellationAmount: row.purchase.totalAmount.neg().toFixed(2),
+      netAmount: row.purchase.totalAmount.neg().toFixed(2),
+      status: "CANCELLED" as const,
+    })),
+  ].sort((left, right) => left.date.getTime() - right.date.getTime() || left.purchaseNumber.localeCompare(right.purchaseNumber));
   return {
-    count: activeRows.length,
-    total: purchaseTotal,
+    count: rows.length,
+    postedCount: rows.filter((row) => row.status === "POSTED").length,
+    cancelledPurchaseCount: rows.filter((row) => row.status === "CANCELLED").length,
+    total: grossPurchases,
+    grossTotal: grossPurchases,
     cancellationCount: cancellations.length,
     cancellationTotal: cancelledAmount,
-    netTotal: decimal(purchaseTotal).sub(cancelledAmount).toFixed(2),
+    netTotal: decimal(grossPurchases).sub(cancelledAmount).toFixed(2),
     cancellations: cancellations.map((row) => ({ id: row.id, date: row.cancelledAt, purchaseId: row.purchase.id, purchaseNumber: row.purchase.supplierInvoiceNumber || row.purchase.purchaseNumber, supplierName: row.purchase.supplier.name, amount: row.purchase.totalAmount.toFixed(2), reason: row.reason })),
     data: rows.map((row) => ({ ...row, totalAmount: row.totalAmount.toFixed(2), subtotal: row.subtotal.toFixed(2), discountAmount: row.discountAmount.toFixed(2) })),
+    events,
   };
 }
 export async function expenseReport(from: Date, to: Date) {

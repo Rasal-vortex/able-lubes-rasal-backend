@@ -12,7 +12,8 @@ export const paymentModel = {
     id: string,
     status: "PAID" | "PARTIALLY_PAID",
     db: any = prisma,
-  ) => db.sale.update({ where: { id }, data: { paymentStatus: status } }),
+    settledAt?: Date,
+  ) => db.sale.update({ where: { id }, data: { paymentStatus: status, ...(settledAt ? { settledAt } : {}) } }),
   purchase: (id: string, db: any = prisma) =>
     db.purchase.findUnique({ where: { id } }),
   purchasePayments: (id: string, db: any = prisma) =>

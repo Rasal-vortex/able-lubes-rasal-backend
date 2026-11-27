@@ -78,11 +78,12 @@ export async function recordCustomerPayment(input: any) {
           paymentNotes = "Coupon payment (no code)";
         }
       }
+      const paymentDate = input.paymentDate ?? new Date();
       const payment = await paymentModel.createCustomerPayment(
         {
           ...input,
           customerId: sale.customerId,
-          paymentDate: input.paymentDate ?? new Date(),
+          paymentDate,
           amount: paymentAmount,
           notes: paymentNotes,
         },
@@ -97,6 +98,7 @@ export async function recordCustomerPayment(input: any) {
         sale.id,
         paymentAmount.eq(outstanding) ? "PAID" : "PARTIALLY_PAID",
         tx,
+        paymentAmount.eq(outstanding) && !sale.settledAt ? paymentDate : undefined,
       );
       return paymentSerializer(payment);
       },

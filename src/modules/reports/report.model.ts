@@ -1,16 +1,23 @@
 import { prisma } from "../../config/prisma.js";
 export const reportModel = {
-  sales: (from: Date, to: Date) =>
+  sales: (from: Date, to: Date, includeSettled = false) =>
     prisma.sale.findMany({
-      where: { status: "POSTED", billDate: { gte: from, lte: to } },
+      where: {
+        status: "POSTED",
+        ...(includeSettled
+          ? { OR: [{ billDate: { gte: from, lte: to } }, { settledAt: { gte: from, lte: to } }] }
+          : { billDate: { gte: from, lte: to } }),
+      },
       select: {
         id: true,
         invoiceNumber: true,
         billDate: true,
+        settledAt: true,
         subtotal: true,
         discountAmount: true,
         totalAmount: true,
         returnStatus: true,
+        creditBill: { select: { id: true } },
         customer: { select: { id: true, name: true } },
         items: {
           select: {
@@ -20,7 +27,7 @@ export const reportModel = {
             inventoryBatch: { select: { purchaseRate: true } },
             unitNameSnapshot: true, unitSymbolSnapshot: true,
             product: { select: { id: true, name: true, purchaseRate: true } },
-            returns: { select: { quantity: true, amount: true, costAmount: true } },
+            returns: { select: { quantity: true, amount: true, costAmount: true, salesReturn: { select: { returnedAt: true } } } },
           },
         },
         payments: { select: { id: true, amount: true, method: true, paymentDate: true } },
@@ -32,14 +39,24 @@ export const reportModel = {
     where: { returnedAt: { gte: from, lte: to } },
     select: {
       id: true, saleId: true, amount: true, returnedAt: true, reason: true,
-      sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } },
-      items: { select: { saleItemId: true, quantity: true, amount: true, costAmount: true } },
+      sale: { select: { id: true, invoiceNumber: true, billDate: true, settledAt: true, creditBill: { select: { id: true } }, customer: { select: { name: true } } } },
+      items: { select: {
+        saleItemId: true, quantity: true, amount: true, costAmount: true,
+        saleItem: {
+          select: {
+            historicalCostSnapshot: true,
+            costSnapshotSource: true,
+            inventoryBatch: { select: { purchaseRate: true } },
+            product: { select: { id: true, name: true, purchaseRate: true } },
+          },
+        },
+      } },
     },
     orderBy: { returnedAt: "asc" },
   }),
   purchases: (from: Date, to: Date) =>
     prisma.purchase.findMany({
-      where: { purchaseDate: { gte: from, lte: to } },
+      where: { status: { in: ["POSTED", "CANCELLED"] }, purchaseDate: { gte: from, lte: to } },
       select: {
         id: true,
         purchaseNumber: true,
@@ -49,13 +66,14 @@ export const reportModel = {
         discountAmount: true,
         totalAmount: true,
         status: true,
+        supplier: { select: { name: true } },
         cancellation: { select: { reason: true, cancelledAt: true } },
       },
       orderBy: { purchaseDate: "asc" },
     }),
   purchaseCancellations: (from: Date, to: Date) => prisma.purchaseCancellation.findMany({
     where: { cancelledAt: { gte: from, lte: to } },
-    select: { id: true, reason: true, cancelledAt: true, purchase: { select: { id: true, purchaseNumber: true, supplierInvoiceNumber: true, totalAmount: true, supplier: { select: { name: true } } } } },
+    select: { id: true, reason: true, cancelledAt: true, purchase: { select: { id: true, purchaseNumber: true, supplierInvoiceNumber: true, purchaseDate: true, totalAmount: true, supplier: { select: { name: true } } } } },
     orderBy: { cancelledAt: "asc" },
   }),
   expenses: (from: Date, to: Date) =>
