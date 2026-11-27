@@ -3,8 +3,25 @@ import { createUserController, loginController, logoutController, refreshControl
 import { createUserSchema, loginSchema } from "./auth.schema.js";
 import { validate } from "../../shared/validate.js";
 import { authenticate, authorize } from "../../middlewares/auth.js";
+import { rateLimit } from "express-rate-limit";
 const router = Router();
-router.post("/login", validate("body", loginSchema), loginController);
+const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many login attempts. Please try again later.",
+  },
+});
+
+router.post(
+  "/login",
+  loginRateLimiter,
+  validate("body", loginSchema),
+  loginController,
+);
 router.post("/refresh", refreshController);
 router.post("/logout", logoutController);
 router.post(

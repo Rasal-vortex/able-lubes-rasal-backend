@@ -152,6 +152,7 @@ model Product {
   purchaseItems  PurchaseItem[]
   stockMovements StockMovement[]
   inventoryBatches InventoryBatch[]
+  updateOperations ProductUpdateOperation[]
 
   @@index([name])
   @@index([brandId])
@@ -582,6 +583,17 @@ model InventoryBatch {
 
   @@index([productId, status, receivedAt])
   @@map("inventory_batches")
+}
+
+model ProductUpdateOperation {
+  idempotencyKey String   @id @map("idempotency_key") @db.Uuid
+  productId      String   @map("product_id") @db.Uuid
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  requestHash    String   @map("request_hash") @db.VarChar(64)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([productId, createdAt])
+  @@map("product_update_operations")
 }
 
 model SupplierPayment {

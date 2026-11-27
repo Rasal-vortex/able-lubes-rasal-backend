@@ -361,10 +361,13 @@ export async function createPurchase(input: any) {
           validateQuantity(row.quantity, product.unit);
           const rate = dec(row.supplierRate);
           const sellingRate = dec(row.sellingRate);
+          const mrp = row.mrp === undefined || row.mrp === null ? row.mrp : dec(row.mrp);
+          if (mrp != null && mrp.lte(product.sellingPrice))
+            throw new ApiError(400, "MRP must be greater than the product's configured selling price");
           const quantity = dec(row.quantity);
           const line = calculateLine(rate, quantity);
           subtotal = subtotal.add(line.subtotal);
-          return { product, row, rate, sellingRate, quantity, line };
+          return { product, row, rate, sellingRate, mrp, quantity, line };
         });
         let totals;
         try {
@@ -386,7 +389,7 @@ export async function createPurchase(input: any) {
         },
         include: { payments: true },
       });
-      for (const { product, row, rate, sellingRate, quantity, line } of purchaseLines) {
+      for (const { product, row, rate, sellingRate, mrp, quantity, line } of purchaseLines) {
         const purchaseItem = await tx.purchaseItem.create({ data: {
           purchaseId: purchase.id, productId: product.id, quantity,
           supplierRate: rate, lineTotal: line.total,
@@ -397,11 +400,12 @@ export async function createPurchase(input: any) {
           productId: product.id, purchaseItemId: purchaseItem.id,
           label: null,
           receivedQuantity: quantity, remainingQuantity: quantity,
-          purchaseRate: rate, sellingRate,
+          purchaseRate: rate, sellingRate, mrp: mrp == null ? null : mrp,
           receivedAt: input.purchaseDate ?? new Date(), source: "PURCHASE", status: "ACTIVE",
         } });
         await tx.product.update({ where: { id: product.id }, data: {
           currentStock: { increment: quantity }, purchaseRate: rate,
+          ...(row.mrp !== undefined ? { mrp: row.mrp === null ? null : mrp } : {}),
         } });
       }
       await applySupplierCredits(tx, purchase.supplierId);

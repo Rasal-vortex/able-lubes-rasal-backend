@@ -14,10 +14,8 @@ const nonNegativeQuantity = z.union([
   z.string().trim().regex(/^\d+(\.\d+)?$/),
 ]).refine((value) => Number(value) >= 0 && Number(value) <= 999999999, "Quantity must be non-negative and within the supported range");
 const batchMrp = money.nullable().optional();
-const optionalBatchLabel = z.string().trim().max(120).optional().nullable();
 const newBatchSchema = z.object({
   clientKey: z.string().trim().min(1).max(80).optional(),
-  label: optionalBatchLabel,
   quantity,
   purchaseRate: positiveRate,
   sellingRate: positiveRate,
@@ -26,11 +24,17 @@ const newBatchSchema = z.object({
 const createBatchSchema = newBatchSchema.extend({ isDefaultSellingRate: z.boolean() });
 const batchUpdateSchema = z.object({
   id: z.uuid(),
-  label: optionalBatchLabel,
-  remainingQuantity: nonNegativeQuantity,
-  sellingRate: positiveRate,
+  expectedRemainingQuantity: nonNegativeQuantity.optional(),
+  remainingQuantity: nonNegativeQuantity.optional(),
+  sellingRate: positiveRate.optional(),
   mrp: batchMrp,
-});
+}).refine(
+  (batch) => batch.remainingQuantity === undefined || batch.expectedRemainingQuantity !== undefined,
+  { message: "Refresh product data before reducing batch stock", path: ["expectedRemainingQuantity"] },
+).refine(
+  (batch) => batch.remainingQuantity !== undefined || batch.sellingRate !== undefined || batch.mrp !== undefined,
+  { message: "Provide at least one batch field to update" },
+);
 export const productIdSchema = z.object({ id: z.uuid() });
 const productFields = z.object({
   name: z.string().trim().min(1).max(160),
@@ -80,7 +84,7 @@ const batchPricingSchema = z.object({
     ctx.addIssue({ code: "custom", path: ["additions"], message: "New batch references must be unique" });
   }
   for (const [index, batch] of batchPricing.updates.entries()) {
-    if (batch.mrp != null && batch.mrp <= batch.sellingRate) {
+    if (batch.mrp != null && batch.sellingRate !== undefined && batch.mrp <= batch.sellingRate) {
       ctx.addIssue({ code: "custom", path: ["updates", index, "mrp"], message: "MRP must be greater than selling price" });
     }
   }
@@ -93,14 +97,19 @@ const batchPricingSchema = z.object({
 export const updateProductSchema = productFields
   .omit({ qty: true })
   .partial()
-  .extend({ batchPricing: batchPricingSchema.optional() })
-  .refine(
-    (product) =>
-      product.mrp == null ||
-      product.sellingPrice === undefined ||
-      product.mrp > product.sellingPrice,
-    { message: "MRP must be greater than selling price", path: ["mrp"] },
-  );
+  .extend({ batchPricing: batchPricingSchema.optional(), idempotencyKey: z.uuid().optional() })
+  .superRefine((product, ctx) => {
+    if (product.batchPricing && !product.idempotencyKey) {
+      ctx.addIssue({ code: "custom", path: ["idempotencyKey"], message: "An idempotency key is required for batch updates" });
+    }
+    if (
+      product.mrp != null &&
+      product.sellingPrice !== undefined &&
+      product.mrp <= product.sellingPrice
+    ) {
+      ctx.addIssue({ code: "custom", path: ["mrp"], message: "MRP must be greater than selling price" });
+    }
+  });
 export const productListSchema = paginationSchema.extend({
   active: z
     .enum(["true", "false"])

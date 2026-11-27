@@ -16,6 +16,11 @@ const purchaseLineSchema = z.object({
     ),
   supplierRate: z.coerce.number().finite().min(0.01).max(9999999999.99),
   sellingRate: z.coerce.number().finite().min(0.01).max(9999999999.99),
+  mrp: z.coerce.number().finite().min(0).max(9999999999.99).nullable().optional(),
+}).superRefine((item, ctx) => {
+  if (item.mrp != null && item.mrp <= item.sellingRate) {
+    ctx.addIssue({ code: "custom", path: ["mrp"], message: "MRP must be greater than selling rate" });
+  }
 });
 export const createPurchaseSchema = z.object({
   idempotencyKey: z.uuid(),

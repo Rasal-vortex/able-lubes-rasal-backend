@@ -32,6 +32,14 @@ export const purchaseSerializer = (purchase: any) => ({
     unitName: item.unitNameSnapshot ?? item.product?.unit?.name,
     unitSymbol: item.unitSymbolSnapshot ?? item.product?.unit?.symbol ?? null,
     unitAllowsDecimals: item.unitAllowsDecimalsSnapshot ?? item.product?.unit?.allowsDecimals,
+    inventoryBatch: item.inventoryBatch ? {
+      ...item.inventoryBatch,
+      purchaseRate: item.inventoryBatch.purchaseRate.toString(),
+      sellingRate: item.inventoryBatch.sellingRate.toString(),
+      mrp: item.inventoryBatch.mrp?.toString() ?? null,
+      receivedQuantity: item.inventoryBatch.receivedQuantity.toString(),
+      remainingQuantity: item.inventoryBatch.remainingQuantity.toString(),
+    } : null,
     product: item.product && {
       ...item.product,
       purchaseRate: item.product.purchaseRate.toString(),
