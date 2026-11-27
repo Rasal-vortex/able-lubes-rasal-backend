@@ -38,7 +38,7 @@ export const cancelBillingCreditSaleSchema = z.object({
   refunds: z.array(refundLineSchema).max(20).default([]),
   // Requiring an explicit set of amounts prevents recorded receipts from being
   // silently treated as money actually received when staff cancels a credit sale.
-  actualPayments: z.array(actualPaymentLineSchema).min(1).max(20),
+  actualPayments: z.array(actualPaymentLineSchema).max(20),
   actualReceivedConfirmed: z.literal(true),
 }).superRefine((input, ctx) => {
   if (input.refundMode === "PENDING" && input.refunds.length) {

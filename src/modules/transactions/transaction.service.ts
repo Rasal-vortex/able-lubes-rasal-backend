@@ -120,6 +120,7 @@ export async function createSale(input: any, attempt = 0) {
           unitSellingPrice: rate,
           batchSellingPriceSnapshot: batch.sellingRate,
           historicalCostSnapshot: batch.purchaseRate,
+          historicalMrpSnapshot: batch.mrp,
           costSnapshotSource: "VERIFIED_BATCH",
           discountAmount: calculated.discountAmount,
           lineTotal: calculated.total,
@@ -441,8 +442,9 @@ async function cancelSaleWithinTransaction(
         include: {
           items: { include: { product: { include: { unit: true } }, inventoryBatch: true } },
           payments: true,
+          creditBill: { select: { id: true } },
           cancellation: { include: { refunds: true } },
-          returns: { select: { id: true } },
+          returns: { select: { id: true, creditAppliedAmount: true } },
         },
       });
       if (!sale) throw new ApiError(404, "Sale not found");
@@ -456,6 +458,16 @@ async function cancelSaleWithinTransaction(
         throw new ApiError(409, "A sale with recorded returns cannot be cancelled; return its remaining products through Sales Return");
       const reason = input.reason.trim();
       if (!reason) throw new ApiError(400, "Cancellation reason is required");
+      const creditBillAmount = Prisma.Decimal.max(
+        dec(0),
+        sale.totalAmount.sub(sale.returns.reduce((total, row) => total.add(row.creditAppliedAmount), dec(0))),
+      );
+      const creditPaidAmount = sale.payments.reduce((total, payment) => total.add(payment.amount), dec(0));
+      // Match the linked Credit Bill's pre-cancellation netDue calculation and snapshot it
+      // before cancellation-time payment corrections or refunds are recorded.
+      const creditReversedAmount = sale.creditBill
+        ? Prisma.Decimal.max(dec(0), creditBillAmount.sub(creditPaidAmount))
+        : dec(0);
       const recordedCollected = sale.payments
         .filter((payment) => payment.method === "CASH" || payment.method === "UPI")
         .reduce((total, payment) => total.add(payment.amount), dec(0));
@@ -570,6 +582,7 @@ async function cancelSaleWithinTransaction(
           collectedAmount: actualTotal,
           actualReceivedAmount: actualTotal,
           pendingAmount: actualTotal.sub(refundTotal),
+          creditReversedAmount,
           paymentCorrections: corrections.length ? { create: corrections } : undefined,
           refunds: refunds.length ? { create: refunds.map((refund) => ({
             amount: dec(refund.amount), method: refund.method, reference: refund.reference?.trim() || null,
@@ -648,13 +661,22 @@ export async function cancelCreditBillSale(
   input: SaleCancellationInput,
   userId?: string,
 ) {
-  if (!input.actualPayments?.length || input.actualReceivedConfirmed !== true)
+  const actualPayments = input.actualPayments;
+  if (input.actualReceivedConfirmed !== true || actualPayments === undefined)
     throw new ApiError(400, "Confirm the amount actually received before cancelling this credit sale");
   return prisma.$transaction(async (tx) => {
     const bill = await tx.customerCreditBill.findUnique({ where: { id: creditBillId }, select: { id: true, saleId: true } });
     if (!bill) throw new ApiError(404, "Credit bill not found");
     if (!bill.saleId) throw new ApiError(409, "Only Billing-generated credit bills can be cancelled as sales");
-    return cancelSaleWithinTransaction(tx, bill.saleId, input, userId);
+    if (!actualPayments.length) {
+      const recordedReceipts = await tx.customerPayment.aggregate({
+        where: { saleId: bill.saleId, method: { in: ["CASH", "UPI"] } },
+        _sum: { amount: true },
+      });
+      if ((recordedReceipts._sum.amount ?? dec(0)).gt(0))
+        throw new ApiError(400, "Enter the actual received payments before cancelling this credit sale");
+    }
+    return cancelSaleWithinTransaction(tx, bill.saleId, { ...input, actualPayments }, userId);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 

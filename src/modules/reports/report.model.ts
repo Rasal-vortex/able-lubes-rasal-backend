@@ -144,11 +144,14 @@ export const reportModel = {
     where: { cancelledAt: { gte: from, lt: to } },
     select: {
       id: true, reason: true, collectedAmount: true, actualReceivedAmount: true,
+      creditReversedAmount: true,
       pendingAmount: true, cancelledAt: true,
       cancelledBy: { select: { name: true } },
       sale: { select: {
-        id: true, invoiceNumber: true, totalAmount: true,
+        id: true, invoiceNumber: true, totalAmount: true, paymentStatus: true,
         customer: { select: { name: true } },
+        creditBill: { select: { id: true } },
+        returns: { select: { creditAppliedAmount: true } },
         payments: { select: { id: true, amount: true, method: true } },
       } },
       refunds: { select: { id: true, amount: true, method: true, reference: true, createdAt: true } },

@@ -312,6 +312,7 @@ model SaleItem {
   discountAmount             Decimal  @default(0) @map("discount_amount") @db.Decimal(12, 2)
   lineTotal                  Decimal  @map("line_total") @db.Decimal(12, 2)
   historicalCostSnapshot     Decimal? @map("historical_cost_snapshot") @db.Decimal(12, 2)
+  historicalMrpSnapshot      Decimal? @map("historical_mrp_snapshot") @db.Decimal(12, 2)
   batchSellingPriceSnapshot  Decimal? @map("batch_selling_price_snapshot") @db.Decimal(12, 2)
   costSnapshotSource         SaleCostSource? @map("cost_snapshot_source")
   unitNameSnapshot           String   @map("unit_name_snapshot")
@@ -357,6 +358,7 @@ model SaleCancellation {
   collectedAmount Decimal     @map("collected_amount") @db.Decimal(12, 2)
   actualReceivedAmount Decimal @default(0) @map("actual_received_amount") @db.Decimal(12, 2)
   pendingAmount   Decimal     @default(0) @map("pending_amount") @db.Decimal(12, 2)
+  creditReversedAmount Decimal? @map("credit_reversed_amount") @db.Decimal(12, 2)
   refunds         SaleRefund[]
   paymentCorrections SalePaymentCorrection[]
   storeCreditRestorations CustomerStoreCreditTransaction[]

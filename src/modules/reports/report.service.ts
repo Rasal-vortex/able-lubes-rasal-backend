@@ -209,6 +209,27 @@ export async function dailySales(date: string) {
   const creditCancellations: Array<Record<string, unknown>> = [];
   for (const cancellation of cancellations) {
     if (!cancellation.sale) continue;
+    const refundAmount = cancellation.refunds.reduce(
+      (total, refund) => total.add(refund.amount),
+      decimal(0),
+    );
+    const reconstructedCreditReversal = cancellation.sale.creditBill
+      ? Prisma.Decimal.max(
+          decimal(0),
+          Prisma.Decimal.max(
+            decimal(0),
+            cancellation.sale.totalAmount.sub(cancellation.sale.returns.reduce(
+              (total, salesReturn) => total.add(salesReturn.creditAppliedAmount),
+              decimal(0),
+            )),
+          ).sub(cancellation.sale.payments.reduce((total, payment) => total.add(payment.amount), decimal(0))),
+        )
+      : cancellation.sale.paymentStatus === "PAID"
+        ? decimal(0)
+        : null;
+    // Historical payment corrections describe adjustments made during cancellation;
+    // they are deliberately excluded from the reconstructed pre-cancellation balance.
+    const creditReversedAmount = cancellation.creditReversedAmount ?? reconstructedCreditReversal;
     const reversalsByPayment = new Map<string, Prisma.Decimal>();
     const verifiedByMethod = new Map<string, Prisma.Decimal>();
     for (const correction of cancellation.paymentCorrections) {
@@ -251,6 +272,8 @@ export async function dailySales(date: string) {
       reason: cancellation.reason,
       date: cancellation.cancelledAt,
       amount: cancellation.sale.totalAmount.toFixed(2),
+      creditReversedAmount: creditReversedAmount?.toFixed(2) ?? null,
+      refundedAmount: refundAmount.toFixed(2),
       actualReceivedAmount: cancellation.actualReceivedAmount.toFixed(2),
       pendingRefundAmount: cancellation.pendingAmount.toFixed(2),
       cancelledBy: cancellation.cancelledBy?.name ?? null,
