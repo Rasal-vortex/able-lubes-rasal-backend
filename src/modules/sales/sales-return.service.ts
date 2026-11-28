@@ -1,6 +1,7 @@
 import { Prisma } from "../../../generated/prisma/client.js";
 import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
+import { synchronizeProductListingDefault } from "../products/product-default.js";
 
 const dec = (value: Prisma.Decimal | number | string) => new Prisma.Decimal(value);
 const money = (value: Prisma.Decimal) => value.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
@@ -250,6 +251,7 @@ async function createReturnWithinTransaction(tx: Prisma.TransactionClient, saleI
         stockAfter: product.currentStock, reason: `Sales return ${sale.invoiceNumber}`, notes: reason, createdById: userId,
       } });
     }
+    await synchronizeProductListingDefault(tx, productId);
   }
 
   const allPending = pendingRefundPayable.add(input.settlementType === "PENDING" ? settlementAmount : dec(0));

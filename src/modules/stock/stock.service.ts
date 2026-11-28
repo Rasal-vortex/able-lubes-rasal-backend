@@ -3,6 +3,7 @@ import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
 import { pageMeta } from "../../shared/pagination.js";
 import { validateQuantity } from "../../shared/quantity.js";
+import { synchronizeProductListingDefault } from "../products/product-default.js";
 
 const dec = (n: number | string) => new Prisma.Decimal(n);
 export async function createAdjustment(input: any, userId: string) {
@@ -126,6 +127,7 @@ export async function createAdjustment(input: any, userId: string) {
           createdBy: { select: { id: true, name: true, email: true } },
         },
       });
+      await synchronizeProductListingDefault(tx, product.id);
       return {
         ...movement,
         unitId: product.unitId,

@@ -6,6 +6,7 @@ import { productSerializer } from "./product.serializer.js";
 import { validateQuantity } from "../../shared/quantity.js";
 import { Prisma } from "../../../generated/prisma/client.js";
 import { createHash } from "node:crypto";
+import { synchronizeProductListingDefault } from "./product-default.js";
 
 const stableValue = (value: any): any => {
   if (Array.isArray(value)) return value.map(stableValue);
@@ -126,6 +127,7 @@ export async function createProduct(data: any, userId: string) {
         });
         stockAfter = stockAfter.add(batchQuantity);
       }
+      await synchronizeProductListingDefault(tx, created.id);
       return tx.product.findUniqueOrThrow({
         where: { id: created.id },
         include: {
@@ -305,21 +307,8 @@ export async function updateProduct(id: string, data: any, userId?: string, user
             if (!selectedDefault) selectedDefault = await tx.inventoryBatch.findFirst({ where: { id: batchPricing.defaultBatchKey, productId: id, status: "ACTIVE", remainingQuantity: { gt: 0 } } });
             if (!selectedDefault || selectedDefault.status !== "ACTIVE" || !new Prisma.Decimal(selectedDefault.remainingQuantity).gt(0))
               throw new ApiError(400, "The default selling rate must belong to a batch with available stock");
-          }
-          const currentDefault = await tx.inventoryBatch.findFirst({ where: { productId: id, isDefaultSellingRate: true } });
-          if (selectedDefault) {
-            const defaultChanged = currentDefault?.id !== selectedDefault.id;
-            if (defaultChanged) {
-              await tx.inventoryBatch.updateMany({ where: { productId: id, isDefaultSellingRate: true }, data: { isDefaultSellingRate: false } });
-              await tx.inventoryBatch.update({ where: { id: selectedDefault.id }, data: { isDefaultSellingRate: true } });
-            }
-            const selectedSelling = new Prisma.Decimal(selectedDefault.sellingRate);
-            const selectedMrp = selectedDefault.mrp == null ? null : new Prisma.Decimal(selectedDefault.mrp);
-            if (!selectedSelling.eq(product.sellingPrice) || (selectedMrp == null ? product.mrp != null : product.mrp == null || !selectedMrp.eq(product.mrp))) {
-              await tx.product.update({ where: { id }, data: { sellingPrice: selectedSelling, mrp: selectedMrp } });
-            }
-          } else if (currentDefault) {
             await tx.inventoryBatch.updateMany({ where: { productId: id, isDefaultSellingRate: true }, data: { isDefaultSellingRate: false } });
+            await tx.inventoryBatch.update({ where: { id: selectedDefault.id }, data: { isDefaultSellingRate: true } });
           }
         } else if (requestedProductData.sellingPrice !== undefined || requestedProductData.mrp !== undefined) {
           const defaultBatch = await tx.inventoryBatch.findFirst({ where: { productId: id, isDefaultSellingRate: true, status: "ACTIVE", remainingQuantity: { gt: 0 } } });
@@ -330,6 +319,7 @@ export async function updateProduct(id: string, data: any, userId?: string, user
               await tx.inventoryBatch.update({ where: { id: defaultBatch.id }, data: { sellingRate: nextSellingRate, mrp: nextMrp } });
           }
         }
+        await synchronizeProductListingDefault(tx, id);
         return fetchProduct(tx);
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 },

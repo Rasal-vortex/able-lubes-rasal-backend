@@ -6,6 +6,8 @@ import { calculateInvoice, calculateLine } from "../../shared/money.js";
 import { validateQuantity } from "../../shared/quantity.js";
 import { purchaseCancellationBlockers } from "../purchases/purchase-eligibility.js";
 import { applySupplierCredits } from "../payments/supplier-credit.service.js";
+import { CREDIT_BILL_CANCELLATION_WINDOW_HOURS } from "../../config/env.js";
+import { synchronizeProductListingDefault } from "../products/product-default.js";
 
 const dec = (n: Prisma.Decimal | number | string) => new Prisma.Decimal(n);
 type SaleCancellationInput = {
@@ -188,6 +190,9 @@ export async function createSale(input: any, attempt = 0) {
             409,
             `Insufficient stock for product ${productById.get(productId)!.name}`,
           );
+      }
+      for (const productId of quantityByProduct.keys()) {
+        await synchronizeProductListingDefault(tx, productId);
       }
       const sale = await tx.sale.create({
         data: {
@@ -394,7 +399,7 @@ export async function createPurchase(input: any) {
         },
         include: { payments: true },
       });
-      for (const { product, row, rate, sellingRate, mrp, quantity, line } of purchaseLines) {
+      for (const { product, rate, sellingRate, mrp, quantity, line } of purchaseLines) {
         const purchaseItem = await tx.purchaseItem.create({ data: {
           purchaseId: purchase.id, productId: product.id, quantity,
           supplierRate: rate, lineTotal: line.total,
@@ -410,8 +415,10 @@ export async function createPurchase(input: any) {
         } });
         await tx.product.update({ where: { id: product.id }, data: {
           currentStock: { increment: quantity }, purchaseRate: rate,
-          ...(row.mrp !== undefined ? { mrp: row.mrp === null ? null : mrp } : {}),
         } });
+      }
+      for (const productId of productIds) {
+        await synchronizeProductListingDefault(tx, productId);
       }
       await applySupplierCredits(tx, purchase.supplierId);
       return tx.purchase.findUniqueOrThrow({ where: { id: purchase.id }, include: {
@@ -442,7 +449,7 @@ async function cancelSaleWithinTransaction(
         include: {
           items: { include: { product: { include: { unit: true } }, inventoryBatch: true } },
           payments: true,
-          creditBill: { select: { id: true } },
+          creditBill: { select: { id: true, createdAt: true } },
           cancellation: { include: { refunds: true } },
           returns: { select: { id: true, creditAppliedAmount: true } },
         },
@@ -451,6 +458,11 @@ async function cancelSaleWithinTransaction(
       if (sale.status === "CANCELLED") {
         if (sale.cancellation) return sale;
         throw new ApiError(409, "This sale was already cancelled and has no cancellation audit record");
+      }
+      if (sale.creditBill) {
+        const expiresAt = sale.creditBill.createdAt.getTime() + CREDIT_BILL_CANCELLATION_WINDOW_HOURS * 60 * 60 * 1000;
+        if (Date.now() >= expiresAt)
+          throw new ApiError(409, `Credit bill cancellation is only allowed within ${CREDIT_BILL_CANCELLATION_WINDOW_HOURS} hours of creation`);
       }
       if (sale.status !== "POSTED")
         throw new ApiError(409, "Only posted sales can be cancelled");
@@ -641,6 +653,9 @@ async function cancelSaleWithinTransaction(
             createdById: userId,
           } });
         }
+      }
+      for (const productId of quantitiesByProduct.keys()) {
+        await synchronizeProductListingDefault(tx, productId);
       }
       return { ...sale, status: "CANCELLED", cancellation: { ...cancellation, refunds } };
 }
@@ -965,6 +980,9 @@ export async function cancelPurchase(id: string, input: any = { idempotencyKey: 
             createdById: userId,
           },
         });
+      }
+      for (const productId of quantitiesByProduct.keys()) {
+        await synchronizeProductListingDefault(tx, productId);
       }
       await applySupplierCredits(tx, purchase.supplierId);
       const finalCancellation = await tx.purchaseCancellation.findUniqueOrThrow({

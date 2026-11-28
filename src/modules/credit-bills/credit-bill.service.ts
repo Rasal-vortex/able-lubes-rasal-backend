@@ -1,6 +1,7 @@
 import { Prisma } from "../../../generated/prisma/client.js";
 import { prisma } from "../../config/prisma.js";
 import { ApiError } from "../../shared/errors.js";
+import { CREDIT_BILL_CANCELLATION_WINDOW_HOURS } from "../../config/env.js";
 import { cancelCreditBillSale as cancelSaleForBill, settleCreditBillRefund as settleRefundForBill } from "../transactions/transaction.service.js";
 
 const decimal = (value: Prisma.Decimal | number | string) => new Prisma.Decimal(value);
@@ -17,6 +18,8 @@ function serializeCreditBill(row: any) {
   const netDue = Prisma.Decimal.max(decimal(0), billAmount.sub(paidAmount));
   const cancelled = row.sale?.status === "CANCELLED";
   const dueDate = dateOnly(row.dueDate);
+  const cancellationExpiresAt = new Date(row.createdAt.getTime() + CREDIT_BILL_CANCELLATION_WINDOW_HOURS * 60 * 60 * 1000);
+  const cancellationEligible = Boolean(row.saleId && !cancelled && row.sale?.status === "POSTED" && !row.sale?.returns?.length && Date.now() < cancellationExpiresAt.getTime());
   const overdue = netDue.gt(0) && dueDate < dateOnly(new Date());
 
   return {
@@ -27,6 +30,8 @@ function serializeCreditBill(row: any) {
     billNumber: row.billNumber,
     billDate: dateOnly(row.billDate),
     dueDate,
+    cancellationExpiresAt: cancellationExpiresAt.toISOString(),
+    cancellationEligible,
     term: row.term,
     status: cancelled ? "Cancelled" : netDue.isZero() ? "Settled" : overdue ? "Overdue" : paidAmount.gt(0) ? "Partially Paid" : "Unpaid",
     priorBalance: row.priorBalance.toFixed(2),
@@ -73,7 +78,7 @@ const creditBillInclude = {
   customer: { select: { id: true, name: true } },
   sale: { select: {
     id: true, status: true, invoiceNumber: true, totalAmount: true,
-    returns: { select: { creditAppliedAmount: true } },
+    returns: { select: { id: true, creditAppliedAmount: true } },
     payments: { select: { id: true, amount: true, method: true, paymentDate: true } },
     items: { select: {
       quantity: true, displayQuantity: true, displayUnitNameSnapshot: true, displayUnitSymbolSnapshot: true,

@@ -139,15 +139,21 @@ export async function dailySales(date: string) {
       totalAmount: sale.totalAmount.toFixed(2),
       returnStatus: sale.returnStatus,
       customer: sale.customer?.name ?? "Walk-in customer",
-      products: sale.items.map((item) => ({
+      products: sale.items.map((item) => {
+        const returnedQuantity = item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0));
+        const returnedDisplayQuantity = item.displayQuantity == null || decimal(item.quantity).isZero()
+          ? null
+          : returnedQuantity.mul(item.displayQuantity).div(item.quantity).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+        return ({
         saleItemId: item.id,
         productId: item.product.id, productName: item.product.name,
-        quantity: (item.displayQuantity ?? item.quantity).toString(), unitName: item.displayUnitNameSnapshot ?? item.unitNameSnapshot,
+        quantity: item.quantity.toString(), displayQuantity: item.displayQuantity?.toString() ?? null,
+        returnedQuantity: returnedQuantity.toString(), returnedDisplayQuantity: returnedDisplayQuantity?.toString() ?? null,
+        unitName: item.displayUnitNameSnapshot ?? item.unitNameSnapshot,
         unitSymbol: item.displayUnitSymbolSnapshot ?? item.unitSymbolSnapshot,
         unitSellingPrice: item.unitSellingPrice.toFixed(2),
         discountAmount: item.discountAmount.toFixed(2), lineTotal: item.lineTotal.toFixed(2),
-        returnedQuantity: item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0)).toString(),
-      })),
+      }); }),
       payments: [],
       paymentsOnDate: [],
     };
@@ -184,7 +190,12 @@ export async function dailySales(date: string) {
       returnStatus: sale.returnStatus,
       returns: sale.returns.map((salesReturn) => ({ amount: salesReturn.amount.toFixed(2), returnedAt: salesReturn.returnedAt })),
       customer: sale.customer?.name ?? "Walk-in customer",
-      products: sale.items.map((item) => ({
+      products: sale.items.map((item) => {
+        const returnedQuantity = item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0));
+        const returnedDisplayQuantity = item.displayQuantity == null || decimal(item.quantity).isZero()
+          ? null
+          : returnedQuantity.mul(item.displayQuantity).div(item.quantity).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+        return ({
         saleItemId: item.id,
         productId: item.productId,
         productName: item.product.name,
@@ -197,9 +208,10 @@ export async function dailySales(date: string) {
         unitSellingPrice: item.unitSellingPrice.toFixed(2),
         discountAmount: item.discountAmount.toFixed(2),
         lineTotal: item.lineTotal.toFixed(2),
-        returnedQuantity: item.returns.reduce((sum, row) => sum.add(row.quantity), decimal(0)).toString(),
         returnedAmount: item.returns.reduce((sum, row) => sum.add(row.amount), decimal(0)).toFixed(2),
-      })),
+        returnedQuantity: returnedQuantity.toString(),
+        returnedDisplayQuantity: returnedDisplayQuantity?.toString() ?? null,
+      }); }),
       payments: [...paymentsById.values()],
       paymentsOnDate: [...paymentsOnDateById.values()],
       lineRevenueTotal: lineRevenueTotal.toFixed(2),
@@ -312,6 +324,8 @@ export async function dailySales(date: string) {
     refunds: [
       ...refunds.map((refund) => ({
       id: refund.id,
+      saleId: refund.cancellation.sale.id,
+      type: "CREDIT_CANCELLATION",
       invoiceNumber: refund.cancellation.sale.invoiceNumber,
       customer: refund.cancellation.sale.customer?.name ?? "Walk-in customer",
       amount: refund.amount.toFixed(2),
@@ -322,6 +336,8 @@ export async function dailySales(date: string) {
       })),
       ...returnRefunds.map((refund) => ({
         id: refund.id,
+        saleId: refund.salesReturn.sale.id,
+        type: "SALES_RETURN",
         invoiceNumber: refund.salesReturn.sale.invoiceNumber,
         customer: refund.salesReturn.sale.customer?.name ?? "Walk-in customer",
         amount: refund.amount.toFixed(2), method: refund.method, reference: refund.reference,

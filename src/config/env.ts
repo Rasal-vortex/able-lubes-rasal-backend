@@ -26,3 +26,5 @@ if (!parsed.success) {
   process.exit(1);
 }
 export const env = parsed.data;
+
+export const CREDIT_BILL_CANCELLATION_WINDOW_HOURS = 24;

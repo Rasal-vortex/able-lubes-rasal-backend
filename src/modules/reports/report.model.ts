@@ -105,7 +105,7 @@ export const reportModel = {
     where: { createdAt: { gte: from, lt: to } },
     select: {
       id: true, amount: true, method: true, reference: true, originalPaymentId: true, createdAt: true,
-      cancellation: { select: { sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } } } },
+      cancellation: { select: { sale: { select: { id: true, invoiceNumber: true, customer: { select: { name: true } } } } } },
     },
     orderBy: { createdAt: "asc" },
   }),
@@ -130,14 +130,14 @@ export const reportModel = {
     select: {
       id: true, reason: true, returnedAt: true, amount: true, creditAppliedAmount: true, settlementType: true,
       returnedBy: { select: { name: true } },
-      sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } },
+      sale: { select: { id: true, invoiceNumber: true, customer: { select: { name: true } } } },
       settlements: { select: { id: true, type: true, amount: true, method: true, reference: true, createdAt: true } },
     },
     orderBy: { returnedAt: "asc" },
   }),
   dailyReturnRefunds: (from: Date, to: Date) => prisma.salesReturnSettlement.findMany({
     where: { type: "REFUND", createdAt: { gte: from, lt: to } },
-    select: { id: true, amount: true, method: true, reference: true, createdAt: true, salesReturn: { select: { sale: { select: { invoiceNumber: true, customer: { select: { name: true } } } } } } },
+    select: { id: true, amount: true, method: true, reference: true, createdAt: true, salesReturn: { select: { sale: { select: { id: true, invoiceNumber: true, customer: { select: { name: true } } } } } } },
     orderBy: { createdAt: "asc" },
   }),
   dailyPaymentCorrections: (from: Date, to: Date) => prisma.saleCancellation.findMany({
